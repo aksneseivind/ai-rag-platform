@@ -36,7 +36,7 @@ app.add_middleware(
 )
 
 # =========================================================
-# MULTI-TENANT STORAGE (CRITICAL FOR SALES)
+# MULTI-TENANT STORAGE (ISOLATION LAYER)
 # =========================================================
 
 INDEX_PATH = "faiss.index"
@@ -45,10 +45,7 @@ META_PATH = "meta.pkl"
 
 DIM = 1536
 
-if os.path.exists(INDEX_PATH):
-    index = faiss.read_index(INDEX_PATH)
-else:
-    index = faiss.IndexFlatIP(DIM)
+index = faiss.read_index(INDEX_PATH) if os.path.exists(INDEX_PATH) else faiss.IndexFlatIP(DIM)
 
 chunk_store = pickle.load(open(CHUNKS_PATH, "rb")) if os.path.exists(CHUNKS_PATH) else []
 chunk_meta = pickle.load(open(META_PATH, "rb")) if os.path.exists(META_PATH) else []
@@ -56,7 +53,7 @@ chunk_meta = pickle.load(open(META_PATH, "rb")) if os.path.exists(META_PATH) els
 documents = {}
 
 # =========================================================
-# BM25 (HYBRID SEARCH)
+# BM25 HYBRID SEARCH
 # =========================================================
 
 bm25 = BM25Okapi([c.lower().split() for c in chunk_store]) if chunk_store else None
@@ -108,10 +105,8 @@ def chunk_text(text, size=1000, overlap=150):
 
     while i < len(text):
         c = text[i:i+size]
-
         if len(c) > 80:
             chunks.append(c)
-
         i += size - overlap
 
     return chunks
@@ -130,17 +125,17 @@ def deduplicate(chunks):
     return out
 
 # =========================================================
-# INTENT CLASSIFIER (CORE FOR SAAS)
+# INTENT ENGINE (SMB + BORETTSLAG)
 # =========================================================
 
-def detect_intent(question: str):
-    q = question.lower()
+def detect_intent(q: str):
+    q = q.lower()
 
     if any(x in q for x in ["pris", "kost", "tilbud", "quote"]):
         return "smb_pricing"
 
-    if any(x in q for x in ["kontakt", "styret", "vedlikehold", "regler"]):
-        return "borettslag_info"
+    if any(x in q for x in ["styret", "vedlikehold", "borettslag", "regler"]):
+        return "housing_association"
 
     return "general"
 
@@ -155,7 +150,7 @@ def rewrite_query(q: str):
             messages=[
                 {
                     "role": "system",
-                    "content": "Rewrite query for retrieval optimization."
+                    "content": "Rewrite query for semantic retrieval."
                 },
                 {"role": "user", "content": q}
             ],
@@ -166,10 +161,10 @@ def rewrite_query(q: str):
         return q
 
 # =========================================================
-# HYBRID RETRIEVAL (FAISS + BM25)
+# RETRIEVAL (HYBRID SCORING + RANKING)
 # =========================================================
 
-def retrieve(query, k=10):
+def retrieve(query, k=12):
     global bm25
 
     if bm25 is None:
@@ -182,9 +177,9 @@ def retrieve(query, k=10):
 
     bm25_scores = bm25.get_scores(query.lower().split()) if bm25 else [0] * len(chunk_store)
 
-    results = []
-
     query_terms = set(query.lower().split())
+
+    results = []
 
     for idx_pos, i in enumerate(ids[0]):
         if i == -1 or i >= len(chunk_store):
@@ -206,26 +201,27 @@ def retrieve(query, k=10):
     return results
 
 # =========================================================
-# FASTAPI ROUTES
+# ROOT
 # =========================================================
 
 @app.get("/")
 def root():
     return {"status": "enterprise-v2-live"}
 
-# ----------------------------
-# UPLOAD (TENANT-AWARE)
-# ----------------------------
+# =========================================================
+# UPLOAD (TENANT ISOLATION)
+# =========================================================
 
 @app.post("/upload")
 async def upload_pdf(
     file: UploadFile = File(...),
     x_tenant_id: str = Header(None)
 ):
-    global index, chunk_store, chunk_meta
 
     if not x_tenant_id:
         raise HTTPException(400, "Missing tenant id")
+
+    global index, chunk_store, chunk_meta
 
     try:
         pdf_bytes = await file.read()
@@ -274,9 +270,9 @@ async def upload_pdf(
     except Exception as e:
         raise HTTPException(500, str(e))
 
-# ----------------------------
-# CHAT (ENTERPRISE RAG)
-# ----------------------------
+# =========================================================
+# CHAT (ENTERPRISE + CITATIONS + INTENT)
+# =========================================================
 
 class ChatRequest(BaseModel):
     question: str
@@ -310,7 +306,6 @@ async def chat(req: ChatRequest):
 
         meta = chunk_meta[i] if i < len(chunk_meta) else None
 
-        # tenant isolation
         if meta and meta.get("tenant_id") != req.tenant_id:
             continue
 
@@ -324,7 +319,7 @@ async def chat(req: ChatRequest):
         sources.append({
             "doc": meta["doc"] if meta else None,
             "chunk_id": meta["chunk_id"] if meta else None,
-            "preview": chunk[:180]
+            "preview": chunk[:200]
         })
 
         if len(selected) == 5:
@@ -338,8 +333,9 @@ async def chat(req: ChatRequest):
             {
                 "role": "system",
                 "content": (
-                    f"You are a RAG assistant specialized in: {intent}\n"
+                    f"You are a RAG assistant specialized in {intent}.\n"
                     "Answer ONLY from context.\n"
+                    "Always prefer citing facts from provided documents.\n\n"
                     f"CONTEXT:\n{context}"
                 )
             },
@@ -354,9 +350,9 @@ async def chat(req: ChatRequest):
         intent=intent
     )
 
-# ----------------------------
-# DOCS
-# ----------------------------
+# =========================================================
+# DOCUMENTS
+# =========================================================
 
 @app.get("/documents")
 def docs():
