@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+openai
+python-dotenv
+numpy
+faiss-cpu
+pypdf2
+pydantic
+rank-bm25
