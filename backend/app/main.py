@@ -1,9 +1,8 @@
 import os
 import io
 import re
-import pickle
 import numpy as np
-import faiss
+import traceback
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,10 +10,24 @@ from pydantic import BaseModel
 from openai import OpenAI
 from dotenv import load_dotenv
 import PyPDF2
-from rank_bm25 import BM25Okapi
+
+from supabase import create_client
+
+# =========================================================
+# INIT
+# =========================================================
 
 load_dotenv()
+
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError("Missing Supabase env vars")
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = FastAPI()
 
@@ -36,46 +49,6 @@ app.add_middleware(
 )
 
 # =========================================================
-# MULTI-TENANT STORAGE (ISOLATION LAYER)
-# =========================================================
-
-INDEX_PATH = "faiss.index"
-CHUNKS_PATH = "chunks.pkl"
-META_PATH = "meta.pkl"
-
-DIM = 1536
-
-index = faiss.read_index(INDEX_PATH) if os.path.exists(INDEX_PATH) else faiss.IndexFlatIP(DIM)
-
-chunk_store = pickle.load(open(CHUNKS_PATH, "rb")) if os.path.exists(CHUNKS_PATH) else []
-chunk_meta = pickle.load(open(META_PATH, "rb")) if os.path.exists(META_PATH) else []
-
-documents = {}
-
-# =========================================================
-# BM25 HYBRID SEARCH
-# =========================================================
-
-bm25 = BM25Okapi([c.lower().split() for c in chunk_store]) if chunk_store else None
-
-def rebuild_bm25():
-    global bm25
-    bm25 = BM25Okapi([c.lower().split() for c in chunk_store]) if chunk_store else None
-
-# =========================================================
-# PERSISTENCE
-# =========================================================
-
-def save_state():
-    faiss.write_index(index, INDEX_PATH)
-
-    with open(CHUNKS_PATH, "wb") as f:
-        pickle.dump(chunk_store, f)
-
-    with open(META_PATH, "wb") as f:
-        pickle.dump(chunk_meta, f)
-
-# =========================================================
 # EMBEDDINGS
 # =========================================================
 
@@ -84,6 +57,7 @@ def get_embedding(text: str):
         model="text-embedding-3-small",
         input=text
     ).data[0].embedding
+
 
 def normalize(v):
     v = np.array(v, dtype="float32")
@@ -97,6 +71,7 @@ def clean_text(text: str) -> str:
     text = text.replace("\n", " ")
     return re.sub(r"\s+", " ", text).strip()
 
+
 def chunk_text(text, size=1000, overlap=150):
     text = clean_text(text)
 
@@ -104,12 +79,13 @@ def chunk_text(text, size=1000, overlap=150):
     i = 0
 
     while i < len(text):
-        c = text[i:i+size]
+        c = text[i:i + size]
         if len(c) > 80:
             chunks.append(c)
         i += size - overlap
 
     return chunks
+
 
 def deduplicate(chunks):
     seen = set()
@@ -125,7 +101,7 @@ def deduplicate(chunks):
     return out
 
 # =========================================================
-# INTENT ENGINE (SMB + BORETTSLAG)
+# INTENT ENGINE
 # =========================================================
 
 def detect_intent(q: str):
@@ -148,10 +124,7 @@ def rewrite_query(q: str):
         res = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {
-                    "role": "system",
-                    "content": "Rewrite query for semantic retrieval."
-                },
+                {"role": "system", "content": "Rewrite query for semantic retrieval."},
                 {"role": "user", "content": q}
             ],
             temperature=0
@@ -161,44 +134,25 @@ def rewrite_query(q: str):
         return q
 
 # =========================================================
-# RETRIEVAL (HYBRID SCORING + RANKING)
+# RETRIEVAL (SAFER + TENANT-AWARE STRATEGY)
 # =========================================================
 
-def retrieve(query, k=12):
-    global bm25
+def retrieve(query_embedding, user_id, k=8):
+    try:
+        res = supabase.rpc(
+            "match_chunks",
+            {
+                "query_embedding": query_embedding,
+                "user_id": user_id,
+                "match_count": k
+            }
+        ).execute()
 
-    if bm25 is None:
-        rebuild_bm25()
+        return res.data or []
 
-    q_emb = normalize(get_embedding(query)).astype("float32")
-    q_emb = np.array([q_emb])
-
-    scores, ids = index.search(q_emb, k)
-
-    bm25_scores = bm25.get_scores(query.lower().split()) if bm25 else [0] * len(chunk_store)
-
-    query_terms = set(query.lower().split())
-
-    results = []
-
-    for idx_pos, i in enumerate(ids[0]):
-        if i == -1 or i >= len(chunk_store):
-            continue
-
-        chunk = chunk_store[i]
-
-        vector_score = float(scores[0][idx_pos])
-        bm25_score = bm25_scores[i] if i < len(bm25_scores) else 0
-        overlap = len(set(chunk.lower().split()) & query_terms)
-        length_bonus = min(len(chunk) / 2500, 0.12)
-
-        score = vector_score + bm25_score * 0.5 + overlap * 0.03 + length_bonus
-
-        results.append((score, i, chunk))
-
-    results.sort(reverse=True, key=lambda x: x[0])
-
-    return results
+    except Exception:
+        print("RPC ERROR:\n", traceback.format_exc())
+        return []
 
 # =========================================================
 # ROOT
@@ -206,22 +160,20 @@ def retrieve(query, k=12):
 
 @app.get("/")
 def root():
-    return {"status": "enterprise-v2-live"}
+    return {"status": "supabase-rag-live"}
 
 # =========================================================
-# UPLOAD (TENANT ISOLATION)
+# UPLOAD
 # =========================================================
 
 @app.post("/upload")
 async def upload_pdf(
     file: UploadFile = File(...),
-    x_tenant_id: str = Header(None)
+    user_id: str = Header(...)
 ):
 
-    if not x_tenant_id:
-        raise HTTPException(400, "Missing tenant id")
-
-    global index, chunk_store, chunk_meta
+    if not user_id:
+        raise HTTPException(401, "Missing user_id")
 
     try:
         pdf_bytes = await file.read()
@@ -234,130 +186,126 @@ async def upload_pdf(
         if not chunks:
             raise HTTPException(400, "No text extracted")
 
-        emb = client.embeddings.create(
+        embeddings = client.embeddings.create(
             model="text-embedding-3-small",
             input=chunks
         )
 
-        vectors = []
+        rows = [
+            {
+                "content": chunk,
+                "embedding": normalize(embeddings.data[i].embedding).tolist(),
+                "metadata": {
+                    "chunk_index": i,
+                    "filename": file.filename,
+                    "user_id": user_id
+                }
+            }
+            for i, chunk in enumerate(chunks)
+        ]
 
-        for i, c in enumerate(chunks):
-            v = normalize(emb.data[i].embedding)
-
-            chunk_store.append(c)
-            chunk_meta.append({
-                "tenant_id": x_tenant_id,
-                "doc": file.filename,
-                "chunk_id": i
-            })
-
-            vectors.append(v)
-
-        vectors = np.array(vectors).astype("float32")
-        index.add(vectors)
-
-        documents[file.filename] = len(chunks)
-
-        rebuild_bm25()
-        save_state()
+        supabase.table("chunks").insert(rows).execute()
 
         return {
             "status": "uploaded",
-            "tenant": x_tenant_id,
-            "chunks": len(chunks)
+            "chunks": len(rows)
         }
 
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    except Exception:
+        print(traceback.format_exc())
+        raise HTTPException(500, "Upload failed")
 
 # =========================================================
-# CHAT (ENTERPRISE + CITATIONS + INTENT)
+# CHAT
 # =========================================================
 
 class ChatRequest(BaseModel):
     question: str
-    tenant_id: str
+    user_id: str
+
 
 class ChatResponse(BaseModel):
     answer: str
     sources: list
     intent: str
 
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
 
-    if index.ntotal == 0:
-        return ChatResponse(
-            answer="No documents uploaded.",
-            sources=[],
-            intent="none"
+    if not req.user_id:
+        raise HTTPException(401, "Missing user_id")
+
+    try:
+        intent = detect_intent(req.question)
+
+        query_embedding = normalize(
+            get_embedding(req.question)
+        ).tolist()
+
+        results = retrieve(
+            query_embedding=query_embedding,
+            user_id=req.user_id,
+            k=8
         )
 
-    intent = detect_intent(req.question)
-    query = rewrite_query(req.question)
+        if not results:
+            return ChatResponse(
+                answer="No relevant context found.",
+                sources=[],
+                intent=intent
+            )
 
-    retrieved = retrieve(query, k=12)
+        context_chunks = []
+        sources = []
 
-    selected = []
-    seen = set()
-    sources = []
+        for r in results[:5]:
+            content = r.get("content")
+            if not content:
+                continue
 
-    for _, i, chunk in retrieved:
+            context_chunks.append(content)
 
-        meta = chunk_meta[i] if i < len(chunk_meta) else None
+            sources.append({
+                "chunk_id": r.get("id"),
+                "preview": content[:200],
+                "similarity": r.get("similarity"),
+                "lexical_rank": r.get("lexical_rank")
+            })
 
-        if meta and meta.get("tenant_id") != req.tenant_id:
-            continue
+        context = "\n\n".join(context_chunks)
 
-        key = chunk[:80]
-        if key in seen:
-            continue
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a strict RAG assistant.\n"
+                        "Use ONLY the provided context.\n"
+                        "If context is insufficient, say you don't know.\n\n"
+                        f"CONTEXT:\n{context}"
+                    )
+                },
+                {"role": "user", "content": req.question}
+            ],
+            temperature=0.2
+        )
 
-        seen.add(key)
-        selected.append(chunk)
+        return ChatResponse(
+            answer=response.choices[0].message.content,
+            sources=sources,
+            intent=intent
+        )
 
-        sources.append({
-            "doc": meta["doc"] if meta else None,
-            "chunk_id": meta["chunk_id"] if meta else None,
-            "preview": chunk[:200]
-        })
-
-        if len(selected) == 5:
-            break
-
-    context = "\n\n".join(selected)
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    f"You are a RAG assistant specialized in {intent}.\n"
-                    "Answer ONLY from context.\n"
-                    "Always prefer citing facts from provided documents.\n\n"
-                    f"CONTEXT:\n{context}"
-                )
-            },
-            {"role": "user", "content": req.question}
-        ],
-        temperature=0.2
-    )
-
-    return ChatResponse(
-        answer=response.choices[0].message.content,
-        sources=sources,
-        intent=intent
-    )
+    except Exception:
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal error")
 
 # =========================================================
-# DOCUMENTS
+# HEALTH
 # =========================================================
 
-@app.get("/documents")
-def docs():
-    return {
-        "documents": list(documents.keys()),
-        "chunks": len(chunk_store),
-        "index_size": index.ntotal
-    }
+@app.get("/health")
+def health():
+    return {"status": "ok"}
