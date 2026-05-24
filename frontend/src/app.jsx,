@@ -1,0 +1,307 @@
+import { useState } from "react";
+
+const API =
+  import.meta.env.VITE_API_URL ||
+  "https://ai-agent-lvvc.onrender.com";
+
+export default function App() {
+  const [file, setFile] = useState(null);
+  const [question, setQuestion] = useState("");
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  // TEMP AUTH (later Supabase Auth replaces this)
+  const [userId] = useState(() => {
+    let id = localStorage.getItem("user_id");
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem("user_id", id);
+    }
+    return id;
+  });
+
+  // ----------------------------
+  // UPLOAD PDF
+  // ----------------------------
+  const uploadPDF = async () => {
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const res = await fetch(`${API}/upload`, {
+        method: "POST",
+        headers: {
+          "user_id": userId,
+        },
+        body: formData,
+      });
+
+      if (!res.ok) throw new Error("Upload failed");
+
+      setFile(null);
+      alert("PDF uploaded ✔");
+    } catch (err) {
+      console.error(err);
+      alert("Upload failed");
+    }
+  };
+
+  // ----------------------------
+  // CHAT
+  // ----------------------------
+  const askQuestion = async (overrideQuestion = null) => {
+    const q = overrideQuestion || question;
+    if (!q) return;
+
+    const userMsg = { role: "user", text: q };
+    setMessages((p) => [...p, userMsg]);
+
+    setLoading(true);
+
+    try {
+      const res = await fetch(`${API}/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          question: q,
+          user_id: userId,
+        }),
+      });
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      const data = await res.json();
+
+      setMessages((p) => [
+        ...p,
+        {
+          role: "bot",
+          text: data.answer || "No response",
+        },
+      ]);
+    } catch (err) {
+      console.error(err);
+      setMessages((p) => [
+        ...p,
+        {
+          role: "bot",
+          text: "Error contacting server",
+        },
+      ]);
+    }
+
+    setLoading(false);
+    setQuestion("");
+  };
+
+  // ----------------------------
+  // EXAMPLES
+  // ----------------------------
+  const exampleQuestions = [
+    "Oppsummer dokumentet",
+    "Hva er de viktigste reglene?",
+    "Finn støy-reglene",
+    "Hva sier dokumentet om fellesarealer?",
+  ];
+
+  // ----------------------------
+  // UI
+  // ----------------------------
+  return (
+    <div style={styles.bg}>
+      <div style={styles.shell}>
+        <div style={styles.sidebar}>
+          <div style={styles.logo}>AI Agent</div>
+
+          <div style={styles.card}>
+            <div style={styles.label}>Upload document</div>
+            <input
+              type="file"
+              onChange={(e) => setFile(e.target.files[0])}
+            />
+            <button onClick={uploadPDF} style={styles.button}>
+              Upload PDF
+            </button>
+          </div>
+
+          <div style={styles.card}>
+            <div style={styles.label}>User</div>
+            <div style={{ fontSize: 11, wordBreak: "break-all" }}>
+              {userId}
+            </div>
+          </div>
+
+          <div style={styles.card}>
+            <div style={styles.label}>Example questions</div>
+
+            {exampleQuestions.map((q, i) => (
+              <button
+                key={i}
+                onClick={() => askQuestion(q)}
+                style={styles.exampleBtn}
+              >
+                {q}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div style={styles.main}>
+          <div style={styles.topbar}>
+            Document Intelligence Chat
+          </div>
+
+          <div style={styles.chat}>
+            {messages.length === 0 && (
+              <div style={styles.empty}>
+                Upload a document and start asking questions
+              </div>
+            )}
+
+            {messages.map((m, i) => (
+              <div
+                key={i}
+                style={{
+                  ...styles.msg,
+                  alignSelf:
+                    m.role === "user" ? "flex-end" : "flex-start",
+                  background:
+                    m.role === "user"
+                      ? "#2563eb"
+                      : "#f3f4f6",
+                  color:
+                    m.role === "user" ? "white" : "#111827",
+                }}
+              >
+                {m.text}
+              </div>
+            ))}
+
+            {loading && (
+              <div style={styles.typing}>AI is thinking…</div>
+            )}
+          </div>
+
+          <div style={styles.inputBar}>
+            <input
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              placeholder="Ask your document..."
+              style={styles.chatInput}
+            />
+            <button onClick={() => askQuestion()} style={styles.send}>
+              Send
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ----------------------------
+const styles = {
+  bg: {
+    height: "100vh",
+    background: "#f5f7fb",
+    display: "flex",
+    justifyContent: "center",
+    alignItems: "center",
+    fontFamily: "Inter, Arial",
+  },
+  shell: {
+    width: "95%",
+    height: "92vh",
+    display: "flex",
+    borderRadius: 16,
+    overflow: "hidden",
+    background: "white",
+  },
+  sidebar: {
+    width: 280,
+    padding: 16,
+    borderRight: "1px solid #eee",
+  },
+  logo: { fontSize: 20, fontWeight: 700, marginBottom: 16 },
+  card: {
+    padding: 12,
+    border: "1px solid #eee",
+    borderRadius: 10,
+    marginBottom: 12,
+  },
+  label: { fontSize: 11, color: "#666", marginBottom: 6 },
+  button: {
+    marginTop: 10,
+    width: "100%",
+    padding: 10,
+    background: "#111",
+    color: "white",
+    borderRadius: 8,
+    border: "none",
+  },
+  exampleBtn: {
+    width: "100%",
+    marginTop: 6,
+    padding: 8,
+    fontSize: 12,
+    textAlign: "left",
+    border: "1px solid #eee",
+    borderRadius: 8,
+    background: "#fafafa",
+    cursor: "pointer",
+  },
+  main: {
+    flex: 1,
+    display: "flex",
+    flexDirection: "column",
+  },
+  topbar: {
+    padding: 14,
+    borderBottom: "1px solid #eee",
+    fontWeight: 600,
+  },
+  chat: {
+    flex: 1,
+    padding: 16,
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+  },
+  msg: {
+    padding: 12,
+    borderRadius: 12,
+    maxWidth: "65%",
+  },
+  empty: {
+    marginTop: 40,
+    textAlign: "center",
+    color: "#999",
+  },
+  typing: {
+    fontSize: 12,
+    color: "#777",
+  },
+  inputBar: {
+    display: "flex",
+    padding: 12,
+    borderTop: "1px solid #eee",
+  },
+  chatInput: {
+    flex: 1,
+    padding: 10,
+    borderRadius: 10,
+    border: "1px solid #ddd",
+  },
+  send: {
+    marginLeft: 10,
+    padding: "10px 16px",
+    borderRadius: 10,
+    background: "#2563eb",
+    color: "white",
+    border: "none",
+  },
+};
