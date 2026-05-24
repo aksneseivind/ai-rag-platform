@@ -8,3 +8,4 @@ pypdf2
 pydantic
 rank-bm25
 python-multipart
+supabase>=2.0.0
