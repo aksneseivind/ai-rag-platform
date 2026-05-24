@@ -2,7 +2,7 @@ import { useState } from "react";
 
 const API =
   import.meta.env.VITE_API_URL ||
-  "https://ai-agent-lvvc.onrender.com";
+  "https://ai-rag-platform.onrender.com";
 
 export default function App() {
   const [file, setFile] = useState(null);
@@ -10,30 +10,40 @@ export default function App() {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
 
-  // TEMP USER (replace with Supabase Auth later)
+  // =========================
+  // TEMP USER
+  // =========================
+
   const [userId] = useState(() => {
     let id = localStorage.getItem("user_id");
+
     if (!id) {
       id = crypto.randomUUID();
       localStorage.setItem("user_id", id);
     }
+
     return id;
   });
 
-  // ROLE (DEV MODE – replace with real auth later)
+  // =========================
+  // DEV ROLE SWITCH
+  // =========================
+
   const [role, setRole] = useState(() => {
     return localStorage.getItem("role") || "resident";
   });
 
   const toggleRole = () => {
     const newRole = role === "admin" ? "resident" : "admin";
+
     setRole(newRole);
     localStorage.setItem("role", newRole);
   };
 
-  // ----------------------------
-  // BORRETTSLAG UX QUERIES
-  // ----------------------------
+  // =========================
+  // QUICK QUESTIONS
+  // =========================
+
   const quickQuestions = [
     "Når er det ro i bygget?",
     "Kan jeg ha husdyr i leiligheten?",
@@ -42,42 +52,61 @@ export default function App() {
     "Hvem kontakter jeg ved skade eller feil?",
   ];
 
-  // ----------------------------
-  // UPLOAD PDF (ADMIN ONLY)
-  // ----------------------------
+  // =========================
+  // UPLOAD
+  // =========================
+
   const uploadPDF = async () => {
     if (!file) return;
 
-    const formData = new FormData();
-    formData.append("file", file);
-
     try {
+      const formData = new FormData();
+
+      formData.append("file", file);
+
+      // IMPORTANT:
+      // backend expects user_id in form-data
+      formData.append("user_id", userId);
+
       const res = await fetch(`${API}/upload`, {
         method: "POST",
-        headers: {
-          "user_id": userId,
-        },
         body: formData,
       });
 
-      if (!res.ok) throw new Error("Upload failed");
+      if (!res.ok) {
+        throw new Error(`Upload failed (${res.status})`);
+      }
+
+      const data = await res.json();
+
+      console.log(data);
+
+      alert(`Dokument lastet opp ✔ (${data.chunks} chunks)`);
 
       setFile(null);
-      alert("Dokument lastet opp ✔");
     } catch (err) {
       console.error(err);
       alert("Upload failed");
     }
   };
 
-  // ----------------------------
+  // =========================
   // CHAT
-  // ----------------------------
+  // =========================
+
   const askQuestion = async (overrideQuestion = null) => {
     const q = overrideQuestion || question;
-    if (!q) return;
 
-    setMessages((p) => [...p, { role: "user", text: q }]);
+    if (!q.trim()) return;
+
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "user",
+        text: q,
+      },
+    ]);
+
     setLoading(true);
 
     try {
@@ -92,12 +121,14 @@ export default function App() {
         }),
       });
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
 
       const data = await res.json();
 
-      setMessages((p) => [
-        ...p,
+      setMessages((prev) => [
+        ...prev,
         {
           role: "bot",
           text: data.answer || "Ingen respons",
@@ -105,8 +136,9 @@ export default function App() {
       ]);
     } catch (err) {
       console.error(err);
-      setMessages((p) => [
-        ...p,
+
+      setMessages((prev) => [
+        ...prev,
         {
           role: "bot",
           text: "Kunne ikke kontakte server",
@@ -118,32 +150,50 @@ export default function App() {
     setQuestion("");
   };
 
+  // =========================
+  // UI
+  // =========================
+
   return (
     <div style={styles.bg}>
       <div style={styles.shell}>
-
         {/* SIDEBAR */}
-        <div style={styles.sidebar}>
-          <div style={styles.logo}>🏢 Borettslagsassistent</div>
 
-          {/* DEV ROLE SWITCH */}
-          <button onClick={toggleRole} style={styles.roleSwitch}>
+        <div style={styles.sidebar}>
+          <div style={styles.logo}>
+            🏢 Borettslagsassistent
+          </div>
+
+          <button
+            onClick={toggleRole}
+            style={styles.roleSwitch}
+          >
             Bytt rolle (DEV): {role}
           </button>
 
           <div style={styles.role}>
             Aktiv rolle:{" "}
-            <b>{role === "admin" ? "Styret (admin)" : "Beboer"}</b>
+            <b>
+              {role === "admin"
+                ? "Styret (admin)"
+                : "Beboer"}
+            </b>
           </div>
 
-          {/* ADMIN PANEL */}
+          {/* ADMIN */}
+
           {role === "admin" && (
             <div style={styles.card}>
-              <div style={styles.label}>Styret – dokumenthåndtering</div>
+              <div style={styles.label}>
+                Styret – dokumenthåndtering
+              </div>
 
               <input
                 type="file"
-                onChange={(e) => setFile(e.target.files?.[0])}
+                accept=".pdf"
+                onChange={(e) =>
+                  setFile(e.target.files?.[0])
+                }
               />
 
               <button
@@ -152,7 +202,9 @@ export default function App() {
                 style={{
                   ...styles.button,
                   opacity: !file ? 0.5 : 1,
-                  cursor: !file ? "not-allowed" : "pointer",
+                  cursor: !file
+                    ? "not-allowed"
+                    : "pointer",
                 }}
               >
                 Last opp PDF
@@ -160,9 +212,12 @@ export default function App() {
             </div>
           )}
 
-          {/* QUICK ACTIONS */}
+          {/* QUICK QUESTIONS */}
+
           <div style={styles.card}>
-            <div style={styles.label}>Vanlige spørsmål</div>
+            <div style={styles.label}>
+              Vanlige spørsmål
+            </div>
 
             {quickQuestions.map((q, i) => (
               <button
@@ -176,21 +231,29 @@ export default function App() {
           </div>
 
           <div style={styles.card}>
-            <div style={styles.label}>Bruker-ID</div>
-            <div style={styles.smallText}>{userId}</div>
+            <div style={styles.label}>
+              Bruker-ID
+            </div>
+
+            <div style={styles.smallText}>
+              {userId}
+            </div>
           </div>
         </div>
 
         {/* MAIN */}
+
         <div style={styles.main}>
           <div style={styles.topbar}>
-            Søk i husordensregler og borettslagsdokumenter
+            Søk i borettslagets dokumenter
           </div>
 
           <div style={styles.chat}>
             {messages.length === 0 && (
               <div style={styles.empty}>
-                Still spørsmål om regler, vedtekter eller praktisk informasjon i borettslaget
+                Still spørsmål om regler,
+                vedtekter eller praktisk
+                informasjon
               </div>
             )}
 
@@ -199,9 +262,20 @@ export default function App() {
                 key={i}
                 style={{
                   ...styles.msg,
-                  alignSelf: m.role === "user" ? "flex-end" : "flex-start",
-                  background: m.role === "user" ? "#2563eb" : "#f3f4f6",
-                  color: m.role === "user" ? "white" : "#111827",
+                  alignSelf:
+                    m.role === "user"
+                      ? "flex-end"
+                      : "flex-start",
+
+                  background:
+                    m.role === "user"
+                      ? "#2563eb"
+                      : "#f3f4f6",
+
+                  color:
+                    m.role === "user"
+                      ? "white"
+                      : "#111827",
                 }}
               >
                 {m.text}
@@ -209,18 +283,31 @@ export default function App() {
             ))}
 
             {loading && (
-              <div style={styles.typing}>Søker i dokumentene…</div>
+              <div style={styles.typing}>
+                Søker i dokumentene…
+              </div>
             )}
           </div>
 
           <div style={styles.inputBar}>
             <input
               value={question}
-              onChange={(e) => setQuestion(e.target.value)}
+              onChange={(e) =>
+                setQuestion(e.target.value)
+              }
               placeholder="Spør borettslaget..."
               style={styles.chatInput}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  askQuestion();
+                }
+              }}
             />
-            <button onClick={() => askQuestion()} style={styles.send}>
+
+            <button
+              onClick={() => askQuestion()}
+              style={styles.send}
+            >
               Send
             </button>
           </div>
@@ -230,7 +317,10 @@ export default function App() {
   );
 }
 
-// ----------------------------
+// =========================
+// STYLES
+// =========================
+
 const styles = {
   bg: {
     height: "100vh",
@@ -240,6 +330,7 @@ const styles = {
     alignItems: "center",
     fontFamily: "Inter, Arial",
   },
+
   shell: {
     width: "95%",
     height: "92vh",
@@ -248,16 +339,19 @@ const styles = {
     overflow: "hidden",
     background: "white",
   },
+
   sidebar: {
     width: 320,
     padding: 16,
     borderRight: "1px solid #eee",
   },
+
   logo: {
     fontSize: 18,
     fontWeight: 700,
     marginBottom: 12,
   },
+
   roleSwitch: {
     width: "100%",
     padding: 8,
@@ -268,26 +362,31 @@ const styles = {
     cursor: "pointer",
     fontSize: 12,
   },
+
   role: {
     fontSize: 12,
     marginBottom: 12,
     color: "#555",
   },
+
   card: {
     padding: 12,
     border: "1px solid #eee",
     borderRadius: 10,
     marginBottom: 12,
   },
+
   label: {
     fontSize: 11,
     color: "#666",
     marginBottom: 6,
   },
+
   smallText: {
     fontSize: 11,
     wordBreak: "break-all",
   },
+
   button: {
     marginTop: 10,
     width: "100%",
@@ -297,6 +396,7 @@ const styles = {
     borderRadius: 8,
     border: "none",
   },
+
   exampleBtn: {
     width: "100%",
     marginTop: 6,
@@ -308,48 +408,59 @@ const styles = {
     background: "#fafafa",
     cursor: "pointer",
   },
+
   main: {
     flex: 1,
     display: "flex",
     flexDirection: "column",
   },
+
   topbar: {
     padding: 14,
     borderBottom: "1px solid #eee",
     fontWeight: 600,
   },
+
   chat: {
     flex: 1,
     padding: 16,
     display: "flex",
     flexDirection: "column",
     gap: 10,
+    overflowY: "auto",
   },
+
   msg: {
     padding: 12,
     borderRadius: 12,
     maxWidth: "65%",
+    whiteSpace: "pre-wrap",
   },
+
   empty: {
     marginTop: 40,
     textAlign: "center",
     color: "#999",
   },
+
   typing: {
     fontSize: 12,
     color: "#777",
   },
+
   inputBar: {
     display: "flex",
     padding: 12,
     borderTop: "1px solid #eee",
   },
+
   chatInput: {
     flex: 1,
     padding: 10,
     borderRadius: 10,
     border: "1px solid #ddd",
   },
+
   send: {
     marginLeft: 10,
     padding: "10px 16px",
