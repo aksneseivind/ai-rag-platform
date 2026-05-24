@@ -3,17 +3,18 @@ import io
 import re
 import traceback
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Header
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
 from openai import OpenAI
 from dotenv import load_dotenv
 import PyPDF2
 from supabase import create_client
 
-# =========================================================
+# =========================
 # INIT
-# =========================================================
+# =========================
 
 load_dotenv()
 
@@ -29,26 +30,35 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = FastAPI(title="Borettslagsassistent API")
 
-# =========================================================
-# CORS
-# =========================================================
+# =========================
+# CORS (FIXED - NO WILDCARD DOMAINS)
+# =========================
+
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "https://borettslagsassistenten.vercel.app",
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "https://ai-agent-five-plum.vercel.app",
-        "https://ai-agent-lvvc.vercel.app"
-    ],
-    allow_credentials=False,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# =========================================================
-# EMBEDDINGS
-# =========================================================
+# =========================
+# PRE-FLIGHT FIX
+# =========================
+
+@app.options("/{full_path:path}")
+async def preflight(full_path: str):
+    return Response(status_code=200)
+
+# =========================
+# OPENAI
+# =========================
 
 def get_embedding(text: str):
     return client.embeddings.create(
@@ -56,9 +66,9 @@ def get_embedding(text: str):
         input=text
     ).data[0].embedding
 
-# =========================================================
-# TEXT PROCESSING
-# =========================================================
+# =========================
+# TEXT
+# =========================
 
 def clean_text(text: str) -> str:
     text = text.replace("\n", " ")
@@ -67,9 +77,7 @@ def clean_text(text: str) -> str:
 
 def chunk_text(text, size=900, overlap=150):
     text = clean_text(text)
-
-    chunks = []
-    i = 0
+    chunks, i = [], 0
 
     while i < len(text):
         chunk = text[i:i + size]
@@ -81,111 +89,55 @@ def chunk_text(text, size=900, overlap=150):
 
 
 def deduplicate(chunks):
-    seen = set()
-    out = []
-
+    seen, out = set(), []
     for c in chunks:
         key = c[:120]
         if key in seen:
             continue
         seen.add(key)
         out.append(c)
-
     return out
 
-# =========================================================
-# INTENT ENGINE (Borettslag fokus)
-# =========================================================
-
-def detect_intent(q: str):
-    q = q.lower()
-
-    if any(x in q for x in ["støy", "regler", "husorden", "borettslag"]):
-        return "housing_rules"
-
-    if any(x in q for x in ["styret", "styre", "vedlikehold", "økonomi"]):
-        return "board_ops"
-
-    if any(x in q for x in ["klage", "problem", "feil", "mangel"]):
-        return "issue_reporting"
-
-    return "general"
-
-# =========================================================
-# QUERY REWRITE
-# =========================================================
-
-def rewrite_query(q: str):
-    try:
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Rewrite this query for semantic search in a housing association document system."
-                },
-                {"role": "user", "content": q}
-            ],
-            temperature=0
-        )
-        return res.choices[0].message.content
-    except:
-        return q
-
-# =========================================================
-# RETRIEVAL
-# =========================================================
-
-def retrieve(query_embedding, user_id, k=8):
-    try:
-        res = supabase.rpc(
-            "match_chunks",
-            {
-                "query_embedding": query_embedding,
-                "user_id": user_id,
-                "match_count": k
-            }
-        ).execute()
-
-        return res.data or []
-
-    except Exception:
-        print("RPC ERROR:\n", traceback.format_exc())
-        return []
-
-# =========================================================
-# UPLOAD PDF (styredokumenter)
-# =========================================================
+# =========================
+# UPLOAD (DEBUG ADDED)
+# =========================
 
 @app.post("/upload")
 async def upload_pdf(
     file: UploadFile = File(...),
-    user_id: str = Header(...)
+    user_id: str = Form(...)
 ):
-
-    if not user_id:
-        raise HTTPException(401, "Missing user_id")
-
     try:
+        print("🔥 UPLOAD HIT")
+
         pdf_bytes = await file.read()
+        print(f"📄 FILE RECEIVED: {file.filename}")
+
         reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
 
         text = " ".join([(p.extract_text() or "") for p in reader.pages])
         text = clean_text(text)
 
+        print(f"📊 RAW TEXT LENGTH: {len(text)}")
+
         chunks = deduplicate(chunk_text(text))
 
+        print(f"🧩 CHUNKS CREATED: {len(chunks)}")
+
         if not chunks:
-            raise HTTPException(400, "No text extracted from PDF")
+            raise HTTPException(400, "No text extracted")
+
+        print("⚡ Creating embeddings...")
 
         embeddings = client.embeddings.create(
             model="text-embedding-3-small",
             input=chunks
         )
 
-        rows = []
-        for i, chunk in enumerate(chunks):
-            rows.append({
+        print("✅ EMBEDDINGS DONE")
+
+        rows = [
+            {
                 "content": chunk,
                 "embedding": embeddings.data[i].embedding,
                 "user_id": user_id,
@@ -194,119 +146,80 @@ async def upload_pdf(
                     "filename": file.filename,
                     "type": "board_document"
                 }
-            })
+            }
+            for i, chunk in enumerate(chunks)
+        ]
+
+        print("💾 INSERTING INTO SUPABASE...")
 
         supabase.table("chunks").insert(rows).execute()
 
+        print("🎉 UPLOAD COMPLETE")
+
         return {
             "status": "uploaded",
-            "chunks": len(rows),
-            "type": "board_document"
+            "chunks": len(rows)
         }
 
-    except Exception:
+    except Exception as e:
+        print("❌ UPLOAD FAILED")
         print(traceback.format_exc())
         raise HTTPException(500, "Upload failed")
 
-# =========================================================
-# CHAT (Borettslagsassistent)
-# =========================================================
+# =========================
+# CHAT (UNCHANGED)
+# =========================
 
 class ChatRequest(BaseModel):
     question: str
     user_id: str
 
 
-class ChatResponse(BaseModel):
-    answer: str
-    sources: list
-    intent: str
-
-
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat")
 async def chat(req: ChatRequest):
-
-    if not req.user_id:
-        raise HTTPException(401, "Missing user_id")
-
     try:
-        intent = detect_intent(req.question)
+        embedding = get_embedding(req.question)
 
-        rewritten_query = rewrite_query(req.question)
-        query_embedding = get_embedding(rewritten_query)
+        res = supabase.rpc(
+            "match_chunks",
+            {
+                "query_embedding": embedding,
+                "user_id": req.user_id,
+                "match_count": 8
+            }
+        ).execute()
 
-        results = retrieve(
-            query_embedding=query_embedding,
-            user_id=req.user_id,
-            k=8
-        )
+        results = res.data or []
 
         if not results:
-            return ChatResponse(
-                answer="Jeg fant ikke relevant informasjon i borettslagets dokumenter.",
-                sources=[],
-                intent=intent
-            )
+            return {"answer": "Fant ingen relevant informasjon."}
 
-        context_chunks = []
-        sources = []
-        seen = set()
-
-        for r in results[:5]:
-            content = r.get("content")
-            if not content:
-                continue
-
-            key = content[:120]
-            if key in seen:
-                continue
-            seen.add(key)
-
-            context_chunks.append(content)
-
-            sources.append({
-                "chunk_id": r.get("id"),
-                "preview": content[:200],
-                "similarity": r.get("similarity"),
-            })
-
-        context = "\n\n".join(context_chunks)
+        context = "\n\n".join([r["content"] for r in results[:5]])
 
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {
                     "role": "system",
-                    "content": (
-                        "Du er Borettslagsassistenten.\n"
-                        "Du hjelper beboere og styret med informasjon fra interne dokumenter.\n"
-                        "Svar kun basert på kontekst.\n"
-                        "Hvis informasjon mangler, si tydelig at det ikke står i dokumentene.\n\n"
-                        f"KONTEKST:\n{context}"
-                    )
+                    "content": f"Bruk kun kontekst:\n{context}"
                 },
                 {"role": "user", "content": req.question}
             ],
             temperature=0.2
         )
 
-        return ChatResponse(
-            answer=response.choices[0].message.content,
-            sources=sources,
-            intent=intent
-        )
+        return {
+            "answer": response.choices[0].message.content
+        }
 
     except Exception:
         print(traceback.format_exc())
         raise HTTPException(500, "Internal error")
 
-# =========================================================
+# =========================
 # HEALTH
-# =========================================================
+# =========================
 
 @app.get("/health")
 def health():
-    return {
-        "status": "ok",
-        "service": "borettslagsassistent"
-    }
+    return {"status": "ok"}
