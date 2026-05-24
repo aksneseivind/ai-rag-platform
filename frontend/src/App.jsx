@@ -1,26 +1,33 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 
 const API =
   import.meta.env.VITE_API_URL ||
   "https://ai-rag-platform.onrender.com";
 
 export default function App() {
-  const fileInputRef = useRef(null);
-
   const [file, setFile] = useState(null);
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [uploading, setUploading] = useState(false);
+
+  // =========================
+  // TEMP USER
+  // =========================
 
   const [userId] = useState(() => {
     let id = localStorage.getItem("user_id");
+
     if (!id) {
       id = crypto.randomUUID();
       localStorage.setItem("user_id", id);
     }
+
     return id;
   });
+
+  // =========================
+  // DEV ROLE SWITCH
+  // =========================
 
   const [role, setRole] = useState(() => {
     return localStorage.getItem("role") || "resident";
@@ -28,9 +35,14 @@ export default function App() {
 
   const toggleRole = () => {
     const newRole = role === "admin" ? "resident" : "admin";
+
     setRole(newRole);
     localStorage.setItem("role", newRole);
   };
+
+  // =========================
+  // QUICK QUESTIONS
+  // =========================
 
   const quickQuestions = [
     "Når er det ro i bygget?",
@@ -41,60 +53,60 @@ export default function App() {
   ];
 
   // =========================
-  // UPLOAD FIXED
+  // UPLOAD
   // =========================
+
   const uploadPDF = async () => {
-    if (!file) {
-      alert("Velg en PDF først");
-      return;
-    }
+    if (!file) return;
 
     try {
-      setUploading(true);
-
       const formData = new FormData();
+
       formData.append("file", file);
 
-      // IMPORTANT: FastAPI expects Form field, not header
+      // IMPORTANT:
+      // backend expects user_id in form-data
       formData.append("user_id", userId);
-
-      console.log("Uploading to:", `${API}/upload`);
 
       const res = await fetch(`${API}/upload`, {
         method: "POST",
         body: formData,
       });
 
-      const text = await res.text();
-
       if (!res.ok) {
-        console.error("UPLOAD ERROR:", text);
-        throw new Error(`Upload failed: ${res.status}`);
+        throw new Error(`Upload failed (${res.status})`);
       }
 
-      const data = JSON.parse(text);
+      const data = await res.json();
 
-      alert(`Upload OK ✔ (${data.chunks} chunks)`);
+      console.log(data);
+
+      alert(`Dokument lastet opp ✔ (${data.chunks} chunks)`);
 
       setFile(null);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-
     } catch (err) {
       console.error(err);
-      alert(err.message || "Upload failed");
-    } finally {
-      setUploading(false);
+      alert("Upload failed");
     }
   };
 
   // =========================
-  // CHAT FIXED
+  // CHAT
   // =========================
-  const askQuestion = async (overrideQuestion = null) => {
-    const q = overrideQuestion ?? question;
-    if (!q || !q.trim()) return;
 
-    setMessages((p) => [...p, { role: "user", text: q }]);
+  const askQuestion = async (overrideQuestion = null) => {
+    const q = overrideQuestion || question;
+
+    if (!q.trim()) return;
+
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "user",
+        text: q,
+      },
+    ]);
+
     setLoading(true);
 
     try {
@@ -109,54 +121,352 @@ export default function App() {
         }),
       });
 
-      const data = await res.json();
-
       if (!res.ok) {
-        throw new Error(data?.detail || `Chat failed ${res.status}`);
+        throw new Error(`HTTP ${res.status}`);
       }
 
-      setMessages((p) => [
-        ...p,
-        { role: "bot", text: data.answer || "Ingen respons" },
+      const data = await res.json();
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "bot",
+          text: data.answer || "Ingen respons",
+        },
       ]);
     } catch (err) {
       console.error(err);
-      setMessages((p) => [
-        ...p,
-        { role: "bot", text: "Kunne ikke kontakte server" },
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "bot",
+          text: "Kunne ikke kontakte server",
+        },
       ]);
-    } finally {
-      setLoading(false);
-      setQuestion("");
     }
+
+    setLoading(false);
+    setQuestion("");
   };
 
+  // =========================
+  // UI
+  // =========================
+
   return (
-    <div>
-      <h3>Borettslagsassistent OK frontend</h3>
+    <div style={styles.bg}>
+      <div style={styles.shell}>
+        {/* SIDEBAR */}
 
-      <input type="file" onChange={(e) => setFile(e.target.files?.[0])} />
+        <div style={styles.sidebar}>
+          <div style={styles.logo}>
+            🏢 Borettslagsassistent
+          </div>
 
-      <button onClick={uploadPDF} disabled={!file || uploading}>
-        {uploading ? "Laster opp..." : "Last opp PDF"}
-      </button>
+          <button
+            onClick={toggleRole}
+            style={styles.roleSwitch}
+          >
+            Bytt rolle (DEV): {role}
+          </button>
 
-      <hr />
+          <div style={styles.role}>
+            Aktiv rolle:{" "}
+            <b>
+              {role === "admin"
+                ? "Styret (admin)"
+                : "Beboer"}
+            </b>
+          </div>
 
-      <input
-        value={question}
-        onChange={(e) => setQuestion(e.target.value)}
-      />
+          {/* ADMIN */}
 
-      <button onClick={() => askQuestion()}>Send</button>
+          {role === "admin" && (
+            <div style={styles.card}>
+              <div style={styles.label}>
+                Styret – dokumenthåndtering
+              </div>
 
-      {loading && <p>Søker...</p>}
+              <input
+                type="file"
+                accept=".pdf"
+                onChange={(e) =>
+                  setFile(e.target.files?.[0])
+                }
+              />
 
-      {messages.map((m, i) => (
-        <p key={i}>
-          <b>{m.role}:</b> {m.text}
-        </p>
-      ))}
+              <button
+                onClick={uploadPDF}
+                disabled={!file}
+                style={{
+                  ...styles.button,
+                  opacity: !file ? 0.5 : 1,
+                  cursor: !file
+                    ? "not-allowed"
+                    : "pointer",
+                }}
+              >
+                Last opp PDF
+              </button>
+            </div>
+          )}
+
+          {/* QUICK QUESTIONS */}
+
+          <div style={styles.card}>
+            <div style={styles.label}>
+              Vanlige spørsmål
+            </div>
+
+            {quickQuestions.map((q, i) => (
+              <button
+                key={i}
+                onClick={() => askQuestion(q)}
+                style={styles.exampleBtn}
+              >
+                {q}
+              </button>
+            ))}
+          </div>
+
+          <div style={styles.card}>
+            <div style={styles.label}>
+              Bruker-ID
+            </div>
+
+            <div style={styles.smallText}>
+              {userId}
+            </div>
+          </div>
+        </div>
+
+        {/* MAIN */}
+
+        <div style={styles.main}>
+          <div style={styles.topbar}>
+            Søk i borettslagets dokumenter
+          </div>
+
+          <div style={styles.chat}>
+            {messages.length === 0 && (
+              <div style={styles.empty}>
+                Still spørsmål om regler,
+                vedtekter eller praktisk
+                informasjon
+              </div>
+            )}
+
+            {messages.map((m, i) => (
+              <div
+                key={i}
+                style={{
+                  ...styles.msg,
+                  alignSelf:
+                    m.role === "user"
+                      ? "flex-end"
+                      : "flex-start",
+
+                  background:
+                    m.role === "user"
+                      ? "#2563eb"
+                      : "#f3f4f6",
+
+                  color:
+                    m.role === "user"
+                      ? "white"
+                      : "#111827",
+                }}
+              >
+                {m.text}
+              </div>
+            ))}
+
+            {loading && (
+              <div style={styles.typing}>
+                Søker i dokumentene…
+              </div>
+            )}
+          </div>
+
+          <div style={styles.inputBar}>
+            <input
+              value={question}
+              onChange={(e) =>
+                setQuestion(e.target.value)
+              }
+              placeholder="Spør borettslaget..."
+              style={styles.chatInput}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  askQuestion();
+                }
+              }}
+            />
+
+            <button
+              onClick={() => askQuestion()}
+              style={styles.send}
+            >
+              Send
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
+
+// =========================
+// STYLES
+// =========================
+
+const styles = {
+  bg: {
+    height: "100vh",
+    background: "#f5f7fb",
+    display: "flex",
+    justifyContent: "center",
+    alignItems: "center",
+    fontFamily: "Inter, Arial",
+  },
+
+  shell: {
+    width: "95%",
+    height: "92vh",
+    display: "flex",
+    borderRadius: 16,
+    overflow: "hidden",
+    background: "white",
+  },
+
+  sidebar: {
+    width: 320,
+    padding: 16,
+    borderRight: "1px solid #eee",
+  },
+
+  logo: {
+    fontSize: 18,
+    fontWeight: 700,
+    marginBottom: 12,
+  },
+
+  roleSwitch: {
+    width: "100%",
+    padding: 8,
+    marginBottom: 10,
+    borderRadius: 8,
+    border: "1px solid #ddd",
+    background: "#fff",
+    cursor: "pointer",
+    fontSize: 12,
+  },
+
+  role: {
+    fontSize: 12,
+    marginBottom: 12,
+    color: "#555",
+  },
+
+  card: {
+    padding: 12,
+    border: "1px solid #eee",
+    borderRadius: 10,
+    marginBottom: 12,
+  },
+
+  label: {
+    fontSize: 11,
+    color: "#666",
+    marginBottom: 6,
+  },
+
+  smallText: {
+    fontSize: 11,
+    wordBreak: "break-all",
+  },
+
+  button: {
+    marginTop: 10,
+    width: "100%",
+    padding: 10,
+    background: "#111",
+    color: "white",
+    borderRadius: 8,
+    border: "none",
+  },
+
+  exampleBtn: {
+    width: "100%",
+    marginTop: 6,
+    padding: 8,
+    fontSize: 12,
+    textAlign: "left",
+    border: "1px solid #eee",
+    borderRadius: 8,
+    background: "#fafafa",
+    cursor: "pointer",
+  },
+
+  main: {
+    flex: 1,
+    display: "flex",
+    flexDirection: "column",
+  },
+
+  topbar: {
+    padding: 14,
+    borderBottom: "1px solid #eee",
+    fontWeight: 600,
+  },
+
+  chat: {
+    flex: 1,
+    padding: 16,
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+    overflowY: "auto",
+  },
+
+  msg: {
+    padding: 12,
+    borderRadius: 12,
+    maxWidth: "65%",
+    whiteSpace: "pre-wrap",
+  },
+
+  empty: {
+    marginTop: 40,
+    textAlign: "center",
+    color: "#999",
+  },
+
+  typing: {
+    fontSize: 12,
+    color: "#777",
+  },
+
+  inputBar: {
+    display: "flex",
+    padding: 12,
+    borderTop: "1px solid #eee",
+  },
+
+  chatInput: {
+    flex: 1,
+    padding: 10,
+    borderRadius: 10,
+    border: "1px solid #ddd",
+  },
+
+  send: {
+    marginLeft: 10,
+    padding: "10px 16px",
+    borderRadius: 10,
+    background: "#2563eb",
+    color: "white",
+    border: "none",
+  },
+};
