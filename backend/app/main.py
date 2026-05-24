@@ -1,7 +1,6 @@
 import os
 import io
 import re
-import numpy as np
 import traceback
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Header
@@ -10,7 +9,6 @@ from pydantic import BaseModel
 from openai import OpenAI
 from dotenv import load_dotenv
 import PyPDF2
-
 from supabase import create_client
 
 # =========================================================
@@ -29,7 +27,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-app = FastAPI()
+app = FastAPI(title="Borettslagsassistent API")
 
 # =========================================================
 # CORS
@@ -58,11 +56,6 @@ def get_embedding(text: str):
         input=text
     ).data[0].embedding
 
-
-def normalize(v):
-    v = np.array(v, dtype="float32")
-    return (v / (np.linalg.norm(v) + 1e-10)).tolist()
-
 # =========================================================
 # TEXT PROCESSING
 # =========================================================
@@ -72,18 +65,16 @@ def clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def chunk_text(text, size=1000, overlap=150):
+def chunk_text(text, size=900, overlap=150):
     text = clean_text(text)
 
     chunks = []
     i = 0
 
     while i < len(text):
-        c = text[i:i + size]
-
-        if len(c) > 80:
-            chunks.append(c)
-
+        chunk = text[i:i + size]
+        if len(chunk) > 80:
+            chunks.append(chunk)
         i += size - overlap
 
     return chunks
@@ -95,27 +86,28 @@ def deduplicate(chunks):
 
     for c in chunks:
         key = c[:120]
-
         if key in seen:
             continue
-
         seen.add(key)
         out.append(c)
 
     return out
 
 # =========================================================
-# INTENT ENGINE
+# INTENT ENGINE (Borettslag fokus)
 # =========================================================
 
 def detect_intent(q: str):
     q = q.lower()
 
-    if any(x in q for x in ["pris", "kost", "tilbud", "quote"]):
-        return "smb_pricing"
+    if any(x in q for x in ["støy", "regler", "husorden", "borettslag"]):
+        return "housing_rules"
 
-    if any(x in q for x in ["styret", "vedlikehold", "borettslag", "regler"]):
-        return "housing_association"
+    if any(x in q for x in ["styret", "styre", "vedlikehold", "økonomi"]):
+        return "board_ops"
+
+    if any(x in q for x in ["klage", "problem", "feil", "mangel"]):
+        return "issue_reporting"
 
     return "general"
 
@@ -124,26 +116,20 @@ def detect_intent(q: str):
 # =========================================================
 
 def rewrite_query(q: str):
-
     try:
         res = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {
                     "role": "system",
-                    "content": (
-                        "Rewrite the user query for semantic retrieval. "
-                        "Keep original meaning."
-                    )
+                    "content": "Rewrite this query for semantic search in a housing association document system."
                 },
                 {"role": "user", "content": q}
             ],
             temperature=0
         )
-
         return res.choices[0].message.content
-
-    except Exception:
+    except:
         return q
 
 # =========================================================
@@ -151,7 +137,6 @@ def rewrite_query(q: str):
 # =========================================================
 
 def retrieve(query_embedding, user_id, k=8):
-
     try:
         res = supabase.rpc(
             "match_chunks",
@@ -169,15 +154,7 @@ def retrieve(query_embedding, user_id, k=8):
         return []
 
 # =========================================================
-# ROOT
-# =========================================================
-
-@app.get("/")
-def root():
-    return {"status": "supabase-rag-live"}
-
-# =========================================================
-# UPLOAD
+# UPLOAD PDF (styredokumenter)
 # =========================================================
 
 @app.post("/upload")
@@ -190,21 +167,16 @@ async def upload_pdf(
         raise HTTPException(401, "Missing user_id")
 
     try:
-
         pdf_bytes = await file.read()
-
         reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
 
-        text = " ".join(
-            [(p.extract_text() or "") for p in reader.pages]
-        )
-
+        text = " ".join([(p.extract_text() or "") for p in reader.pages])
         text = clean_text(text)
 
         chunks = deduplicate(chunk_text(text))
 
         if not chunks:
-            raise HTTPException(400, "No text extracted")
+            raise HTTPException(400, "No text extracted from PDF")
 
         embeddings = client.embeddings.create(
             model="text-embedding-3-small",
@@ -212,22 +184,15 @@ async def upload_pdf(
         )
 
         rows = []
-
         for i, chunk in enumerate(chunks):
-
             rows.append({
                 "content": chunk,
-                "embedding": normalize(
-                    embeddings.data[i].embedding
-                ),
-
-                # IMPORTANT:
-                # tenant isolation column
+                "embedding": embeddings.data[i].embedding,
                 "user_id": user_id,
-
                 "metadata": {
                     "chunk_index": i,
-                    "filename": file.filename
+                    "filename": file.filename,
+                    "type": "board_document"
                 }
             })
 
@@ -235,7 +200,8 @@ async def upload_pdf(
 
         return {
             "status": "uploaded",
-            "chunks": len(rows)
+            "chunks": len(rows),
+            "type": "board_document"
         }
 
     except Exception:
@@ -243,7 +209,7 @@ async def upload_pdf(
         raise HTTPException(500, "Upload failed")
 
 # =========================================================
-# CHAT
+# CHAT (Borettslagsassistent)
 # =========================================================
 
 class ChatRequest(BaseModel):
@@ -264,14 +230,10 @@ async def chat(req: ChatRequest):
         raise HTTPException(401, "Missing user_id")
 
     try:
-
         intent = detect_intent(req.question)
 
         rewritten_query = rewrite_query(req.question)
-
-        query_embedding = normalize(
-            get_embedding(rewritten_query)
-        )
+        query_embedding = get_embedding(rewritten_query)
 
         results = retrieve(
             query_embedding=query_embedding,
@@ -281,28 +243,23 @@ async def chat(req: ChatRequest):
 
         if not results:
             return ChatResponse(
-                answer="No relevant context found.",
+                answer="Jeg fant ikke relevant informasjon i borettslagets dokumenter.",
                 sources=[],
                 intent=intent
             )
 
         context_chunks = []
         sources = []
-
         seen = set()
 
         for r in results[:5]:
-
             content = r.get("content")
-
             if not content:
                 continue
 
             key = content[:120]
-
             if key in seen:
                 continue
-
             seen.add(key)
 
             context_chunks.append(content)
@@ -311,7 +268,6 @@ async def chat(req: ChatRequest):
                 "chunk_id": r.get("id"),
                 "preview": content[:200],
                 "similarity": r.get("similarity"),
-                "lexical_rank": r.get("lexical_rank")
             })
 
         context = "\n\n".join(context_chunks)
@@ -322,16 +278,14 @@ async def chat(req: ChatRequest):
                 {
                     "role": "system",
                     "content": (
-                        "You are a strict RAG assistant.\n"
-                        "Use ONLY the provided context.\n"
-                        "If context is insufficient, say you don't know.\n\n"
-                        f"CONTEXT:\n{context}"
+                        "Du er Borettslagsassistenten.\n"
+                        "Du hjelper beboere og styret med informasjon fra interne dokumenter.\n"
+                        "Svar kun basert på kontekst.\n"
+                        "Hvis informasjon mangler, si tydelig at det ikke står i dokumentene.\n\n"
+                        f"KONTEKST:\n{context}"
                     )
                 },
-                {
-                    "role": "user",
-                    "content": req.question
-                }
+                {"role": "user", "content": req.question}
             ],
             temperature=0.2
         )
@@ -344,11 +298,7 @@ async def chat(req: ChatRequest):
 
     except Exception:
         print(traceback.format_exc())
-
-        raise HTTPException(
-            status_code=500,
-            detail="Internal error"
-        )
+        raise HTTPException(500, "Internal error")
 
 # =========================================================
 # HEALTH
@@ -356,4 +306,7 @@ async def chat(req: ChatRequest):
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "service": "borettslagsassistent"
+    }

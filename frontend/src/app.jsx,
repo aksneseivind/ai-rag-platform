@@ -20,8 +20,21 @@ export default function App() {
     return id;
   });
 
+  // ROLE (demo: switch later to real auth / org roles)
+  const [role] = useState("resident"); // "admin" | "resident"
+
   // ----------------------------
-  // UPLOAD PDF
+  // QUICK QUESTIONS (borettslag UX)
+  // ----------------------------
+  const quickQuestions = [
+    "Når er det ro i bygget?",
+    "Hva er reglene for dyrehold?",
+    "Hvor kaster jeg søppel?",
+    "Hvem kontakter jeg ved feil eller skade?",
+  ];
+
+  // ----------------------------
+  // UPLOAD PDF (ADMIN ONLY)
   // ----------------------------
   const uploadPDF = async () => {
     if (!file) return;
@@ -41,7 +54,7 @@ export default function App() {
       if (!res.ok) throw new Error("Upload failed");
 
       setFile(null);
-      alert("PDF uploaded ✔");
+      alert("Dokument lastet opp ✔");
     } catch (err) {
       console.error(err);
       alert("Upload failed");
@@ -55,9 +68,7 @@ export default function App() {
     const q = overrideQuestion || question;
     if (!q) return;
 
-    const userMsg = { role: "user", text: q };
-    setMessages((p) => [...p, userMsg]);
-
+    setMessages((p) => [...p, { role: "user", text: q }]);
     setLoading(true);
 
     try {
@@ -80,7 +91,7 @@ export default function App() {
         ...p,
         {
           role: "bot",
-          text: data.answer || "No response",
+          text: data.answer || "Ingen respons",
         },
       ]);
     } catch (err) {
@@ -89,7 +100,7 @@ export default function App() {
         ...p,
         {
           role: "bot",
-          text: "Error contacting server",
+          text: "Kunne ikke kontakte server",
         },
       ]);
     }
@@ -99,46 +110,38 @@ export default function App() {
   };
 
   // ----------------------------
-  // EXAMPLES
-  // ----------------------------
-  const exampleQuestions = [
-    "Oppsummer dokumentet",
-    "Hva er de viktigste reglene?",
-    "Finn støy-reglene",
-    "Hva sier dokumentet om fellesarealer?",
-  ];
-
-  // ----------------------------
   // UI
   // ----------------------------
   return (
     <div style={styles.bg}>
       <div style={styles.shell}>
+
+        {/* SIDEBAR */}
         <div style={styles.sidebar}>
-          <div style={styles.logo}>AI Agent</div>
+          <div style={styles.logo}>🏢 Borettslagsassistent</div>
 
-          <div style={styles.card}>
-            <div style={styles.label}>Upload document</div>
-            <input
-              type="file"
-              onChange={(e) => setFile(e.target.files[0])}
-            />
-            <button onClick={uploadPDF} style={styles.button}>
-              Upload PDF
-            </button>
+          <div style={styles.role}>
+            Rolle: <b>{role === "admin" ? "Styret" : "Beboer"}</b>
           </div>
 
-          <div style={styles.card}>
-            <div style={styles.label}>User</div>
-            <div style={{ fontSize: 11, wordBreak: "break-all" }}>
-              {userId}
+          {/* ADMIN PANEL */}
+          {role === "admin" && (
+            <div style={styles.card}>
+              <div style={styles.label}>Styret - last opp dokumenter</div>
+              <input
+                type="file"
+                onChange={(e) => setFile(e.target.files[0])}
+              />
+              <button onClick={uploadPDF} style={styles.button}>
+                Last opp PDF
+              </button>
             </div>
-          </div>
+          )}
 
           <div style={styles.card}>
-            <div style={styles.label}>Example questions</div>
+            <div style={styles.label}>Hurtigvalg</div>
 
-            {exampleQuestions.map((q, i) => (
+            {quickQuestions.map((q, i) => (
               <button
                 key={i}
                 onClick={() => askQuestion(q)}
@@ -148,17 +151,25 @@ export default function App() {
               </button>
             ))}
           </div>
+
+          <div style={styles.card}>
+            <div style={styles.label}>Din ID (demo)</div>
+            <div style={{ fontSize: 11, wordBreak: "break-all" }}>
+              {userId}
+            </div>
+          </div>
         </div>
 
+        {/* MAIN */}
         <div style={styles.main}>
           <div style={styles.topbar}>
-            Document Intelligence Chat
+            Finn informasjon i borettslaget
           </div>
 
           <div style={styles.chat}>
             {messages.length === 0 && (
               <div style={styles.empty}>
-                Upload a document and start asking questions
+                Still et spørsmål om regler, vedtekter eller praktisk informasjon
               </div>
             )}
 
@@ -170,11 +181,8 @@ export default function App() {
                   alignSelf:
                     m.role === "user" ? "flex-end" : "flex-start",
                   background:
-                    m.role === "user"
-                      ? "#2563eb"
-                      : "#f3f4f6",
-                  color:
-                    m.role === "user" ? "white" : "#111827",
+                    m.role === "user" ? "#2563eb" : "#f3f4f6",
+                  color: m.role === "user" ? "white" : "#111827",
                 }}
               >
                 {m.text}
@@ -182,7 +190,7 @@ export default function App() {
             ))}
 
             {loading && (
-              <div style={styles.typing}>AI is thinking…</div>
+              <div style={styles.typing}>Søker i dokumentene…</div>
             )}
           </div>
 
@@ -190,7 +198,7 @@ export default function App() {
             <input
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
-              placeholder="Ask your document..."
+              placeholder="Spør om borettslaget..."
               style={styles.chatInput}
             />
             <button onClick={() => askQuestion()} style={styles.send}>
@@ -222,11 +230,16 @@ const styles = {
     background: "white",
   },
   sidebar: {
-    width: 280,
+    width: 300,
     padding: 16,
     borderRight: "1px solid #eee",
   },
-  logo: { fontSize: 20, fontWeight: 700, marginBottom: 16 },
+  logo: { fontSize: 18, fontWeight: 700, marginBottom: 10 },
+  role: {
+    fontSize: 12,
+    marginBottom: 12,
+    color: "#555",
+  },
   card: {
     padding: 12,
     border: "1px solid #eee",
