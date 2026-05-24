@@ -1,18 +1,33 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+
+// ======================================================
+// API
+// ======================================================
 
 const API =
   import.meta.env.VITE_API_URL ||
   "https://ai-rag-platform.onrender.com";
 
+// ======================================================
+// APP
+// ======================================================
+
 export default function App() {
+  const fileInputRef = useRef(null);
+
+  // ======================================================
+  // STATE
+  // ======================================================
+
   const [file, setFile] = useState(null);
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
 
-  // =========================
-  // TEMP USER
-  // =========================
+  // ======================================================
+  // TEMP USER ID
+  // ======================================================
 
   const [userId] = useState(() => {
     let id = localStorage.getItem("user_id");
@@ -25,24 +40,25 @@ export default function App() {
     return id;
   });
 
-  // =========================
+  // ======================================================
   // DEV ROLE SWITCH
-  // =========================
+  // ======================================================
 
   const [role, setRole] = useState(() => {
     return localStorage.getItem("role") || "resident";
   });
 
   const toggleRole = () => {
-    const newRole = role === "admin" ? "resident" : "admin";
+    const newRole =
+      role === "admin" ? "resident" : "admin";
 
     setRole(newRole);
     localStorage.setItem("role", newRole);
   };
 
-  // =========================
+  // ======================================================
   // QUICK QUESTIONS
-  // =========================
+  // ======================================================
 
   const quickQuestions = [
     "Når er det ro i bygget?",
@@ -52,52 +68,92 @@ export default function App() {
     "Hvem kontakter jeg ved skade eller feil?",
   ];
 
-  // =========================
-  // UPLOAD
-  // =========================
+  // ======================================================
+  // PDF UPLOAD
+  // ======================================================
 
   const uploadPDF = async () => {
-    if (!file) return;
+    if (!file) {
+      alert("Velg en PDF først");
+      return;
+    }
 
     try {
+      setUploading(true);
+
       const formData = new FormData();
 
-      formData.append("file", file);
-
       // IMPORTANT:
-      // backend expects user_id in form-data
+      // backend expects BOTH in form-data
+
+      formData.append("file", file);
       formData.append("user_id", userId);
+
+      console.log("Uploading to:", `${API}/upload`);
 
       const res = await fetch(`${API}/upload`, {
         method: "POST",
         body: formData,
       });
 
+      // HANDLE FAILED REQUEST
+
       if (!res.ok) {
-        throw new Error(`Upload failed (${res.status})`);
+        const errText = await res.text();
+
+        console.error("UPLOAD ERROR:");
+        console.error(errText);
+
+        throw new Error(
+          `Upload failed (${res.status})`
+        );
       }
+
+      // SUCCESS
 
       const data = await res.json();
 
+      console.log("UPLOAD SUCCESS:");
       console.log(data);
 
-      alert(`Dokument lastet opp ✔ (${data.chunks} chunks)`);
+      alert(
+        `Dokument lastet opp ✔ (${data.chunks} chunks)`
+      );
+
+      // RESET FILE
 
       setFile(null);
+
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+
     } catch (err) {
       console.error(err);
-      alert("Upload failed");
+
+      alert(
+        err?.message || "Upload failed"
+      );
+
+    } finally {
+      setUploading(false);
     }
   };
 
-  // =========================
+  // ======================================================
   // CHAT
-  // =========================
+  // ======================================================
 
-  const askQuestion = async (overrideQuestion = null) => {
-    const q = overrideQuestion || question;
+  const askQuestion = async (
+    overrideQuestion = null
+  ) => {
+
+    const q =
+      overrideQuestion || question;
 
     if (!q.trim()) return;
+
+    // ADD USER MESSAGE
 
     setMessages((prev) => [
       ...prev,
@@ -110,10 +166,12 @@ export default function App() {
     setLoading(true);
 
     try {
+
       const res = await fetch(`${API}/chat`, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
+          "Content-Type":
+            "application/json",
         },
         body: JSON.stringify({
           question: q,
@@ -121,9 +179,17 @@ export default function App() {
         }),
       });
 
+      // HANDLE FAILED REQUEST
+
       if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
+        const errText = await res.text();
+
+        throw new Error(
+          `Chat failed (${res.status})`
+        );
       }
+
+      // SUCCESS
 
       const data = await res.json();
 
@@ -131,38 +197,49 @@ export default function App() {
         ...prev,
         {
           role: "bot",
-          text: data.answer || "Ingen respons",
+          text:
+            data.answer ||
+            "Ingen respons",
         },
       ]);
+
     } catch (err) {
+
       console.error(err);
 
       setMessages((prev) => [
         ...prev,
         {
           role: "bot",
-          text: "Kunne ikke kontakte server",
+          text:
+            "Kunne ikke kontakte server",
         },
       ]);
-    }
 
-    setLoading(false);
-    setQuestion("");
+    } finally {
+
+      setLoading(false);
+      setQuestion();
+    }
   };
 
-  // =========================
+  // ======================================================
   // UI
-  // =========================
+  // ======================================================
 
   return (
     <div style={styles.bg}>
       <div style={styles.shell}>
+
         {/* SIDEBAR */}
 
         <div style={styles.sidebar}>
+
           <div style={styles.logo}>
             🏢 Borettslagsassistent
           </div>
+
+          {/* ROLE SWITCH */}
 
           <button
             onClick={toggleRole}
@@ -180,41 +257,67 @@ export default function App() {
             </b>
           </div>
 
-          {/* ADMIN */}
+          {/* ADMIN PANEL */}
 
           {role === "admin" && (
             <div style={styles.card}>
+
               <div style={styles.label}>
                 Styret – dokumenthåndtering
               </div>
 
               <input
+                ref={fileInputRef}
                 type="file"
                 accept=".pdf"
                 onChange={(e) =>
-                  setFile(e.target.files?.[0])
+                  setFile(
+                    e.target.files?.[0]
+                  )
                 }
               />
 
+              {/* SHOW FILE NAME */}
+
+              {file && (
+                <div style={styles.fileName}>
+                  Valgt fil:
+                  <br />
+                  <b>{file.name}</b>
+                </div>
+              )}
+
+              {/* UPLOAD BUTTON */}
+
               <button
                 onClick={uploadPDF}
-                disabled={!file}
+                disabled={
+                  !file || uploading
+                }
                 style={{
                   ...styles.button,
-                  opacity: !file ? 0.5 : 1,
-                  cursor: !file
-                    ? "not-allowed"
-                    : "pointer",
+                  opacity:
+                    !file || uploading
+                      ? 0.6
+                      : 1,
+                  cursor:
+                    !file || uploading
+                      ? "not-allowed"
+                      : "pointer",
                 }}
               >
-                Last opp PDF
+                {uploading
+                  ? "Laster opp..."
+                  : "Last opp PDF"}
               </button>
+
             </div>
           )}
 
           {/* QUICK QUESTIONS */}
 
           <div style={styles.card}>
+
             <div style={styles.label}>
               Vanlige spørsmål
             </div>
@@ -222,15 +325,21 @@ export default function App() {
             {quickQuestions.map((q, i) => (
               <button
                 key={i}
-                onClick={() => askQuestion(q)}
+                onClick={() =>
+                  askQuestion(q)
+                }
                 style={styles.exampleBtn}
               >
                 {q}
               </button>
             ))}
+
           </div>
 
+          {/* USER ID */}
+
           <div style={styles.card}>
+
             <div style={styles.label}>
               Bruker-ID
             </div>
@@ -238,17 +347,23 @@ export default function App() {
             <div style={styles.smallText}>
               {userId}
             </div>
+
           </div>
+
         </div>
 
         {/* MAIN */}
 
         <div style={styles.main}>
+
           <div style={styles.topbar}>
             Søk i borettslagets dokumenter
           </div>
 
+          {/* CHAT AREA */}
+
           <div style={styles.chat}>
+
             {messages.length === 0 && (
               <div style={styles.empty}>
                 Still spørsmål om regler,
@@ -262,6 +377,7 @@ export default function App() {
                 key={i}
                 style={{
                   ...styles.msg,
+
                   alignSelf:
                     m.role === "user"
                       ? "flex-end"
@@ -287,13 +403,19 @@ export default function App() {
                 Søker i dokumentene…
               </div>
             )}
+
           </div>
 
+          {/* INPUT BAR */}
+
           <div style={styles.inputBar}>
+
             <input
               value={question}
               onChange={(e) =>
-                setQuestion(e.target.value)
+                setQuestion(
+                  e.target.value
+                )
               }
               placeholder="Spør borettslaget..."
               style={styles.chatInput}
@@ -305,21 +427,25 @@ export default function App() {
             />
 
             <button
-              onClick={() => askQuestion()}
+              onClick={() =>
+                askQuestion()
+              }
               style={styles.send}
             >
               Send
             </button>
+
           </div>
+
         </div>
       </div>
     </div>
   );
 }
 
-// =========================
+// ======================================================
 // STYLES
-// =========================
+// ======================================================
 
 const styles = {
   bg: {
@@ -385,6 +511,12 @@ const styles = {
   smallText: {
     fontSize: 11,
     wordBreak: "break-all",
+  },
+
+  fileName: {
+    marginTop: 10,
+    fontSize: 12,
+    color: "#444",
   },
 
   button: {
