@@ -10,7 +10,7 @@ export default function App() {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
 
-  // TEMP AUTH (later Supabase Auth replaces this)
+  // TEMP USER (replace with Supabase Auth later)
   const [userId] = useState(() => {
     let id = localStorage.getItem("user_id");
     if (!id) {
@@ -20,17 +20,26 @@ export default function App() {
     return id;
   });
 
-  // ROLE (demo: switch later to real auth / org roles)
-  const [role] = useState("resident"); // "admin" | "resident"
+  // ROLE (DEV MODE – replace with real auth later)
+  const [role, setRole] = useState(() => {
+    return localStorage.getItem("role") || "resident";
+  });
+
+  const toggleRole = () => {
+    const newRole = role === "admin" ? "resident" : "admin";
+    setRole(newRole);
+    localStorage.setItem("role", newRole);
+  };
 
   // ----------------------------
-  // QUICK QUESTIONS (borettslag UX)
+  // BORRETTSLAG UX QUERIES
   // ----------------------------
   const quickQuestions = [
     "Når er det ro i bygget?",
-    "Hva er reglene for dyrehold?",
-    "Hvor kaster jeg søppel?",
-    "Hvem kontakter jeg ved feil eller skade?",
+    "Kan jeg ha husdyr i leiligheten?",
+    "Hva gjelder ved oppussing?",
+    "Hvor kaster jeg restavfall?",
+    "Hvem kontakter jeg ved skade eller feil?",
   ];
 
   // ----------------------------
@@ -109,9 +118,6 @@ export default function App() {
     setQuestion("");
   };
 
-  // ----------------------------
-  // UI
-  // ----------------------------
   return (
     <div style={styles.bg}>
       <div style={styles.shell}>
@@ -120,26 +126,43 @@ export default function App() {
         <div style={styles.sidebar}>
           <div style={styles.logo}>🏢 Borettslagsassistent</div>
 
+          {/* DEV ROLE SWITCH */}
+          <button onClick={toggleRole} style={styles.roleSwitch}>
+            Bytt rolle (DEV): {role}
+          </button>
+
           <div style={styles.role}>
-            Rolle: <b>{role === "admin" ? "Styret" : "Beboer"}</b>
+            Aktiv rolle:{" "}
+            <b>{role === "admin" ? "Styret (admin)" : "Beboer"}</b>
           </div>
 
           {/* ADMIN PANEL */}
           {role === "admin" && (
             <div style={styles.card}>
-              <div style={styles.label}>Styret - last opp dokumenter</div>
+              <div style={styles.label}>Styret – dokumenthåndtering</div>
+
               <input
                 type="file"
-                onChange={(e) => setFile(e.target.files[0])}
+                onChange={(e) => setFile(e.target.files?.[0])}
               />
-              <button onClick={uploadPDF} style={styles.button}>
+
+              <button
+                onClick={uploadPDF}
+                disabled={!file}
+                style={{
+                  ...styles.button,
+                  opacity: !file ? 0.5 : 1,
+                  cursor: !file ? "not-allowed" : "pointer",
+                }}
+              >
                 Last opp PDF
               </button>
             </div>
           )}
 
+          {/* QUICK ACTIONS */}
           <div style={styles.card}>
-            <div style={styles.label}>Hurtigvalg</div>
+            <div style={styles.label}>Vanlige spørsmål</div>
 
             {quickQuestions.map((q, i) => (
               <button
@@ -153,23 +176,21 @@ export default function App() {
           </div>
 
           <div style={styles.card}>
-            <div style={styles.label}>Din ID (demo)</div>
-            <div style={{ fontSize: 11, wordBreak: "break-all" }}>
-              {userId}
-            </div>
+            <div style={styles.label}>Bruker-ID</div>
+            <div style={styles.smallText}>{userId}</div>
           </div>
         </div>
 
         {/* MAIN */}
         <div style={styles.main}>
           <div style={styles.topbar}>
-            Finn informasjon i borettslaget
+            Søk i husordensregler og borettslagsdokumenter
           </div>
 
           <div style={styles.chat}>
             {messages.length === 0 && (
               <div style={styles.empty}>
-                Still et spørsmål om regler, vedtekter eller praktisk informasjon
+                Still spørsmål om regler, vedtekter eller praktisk informasjon i borettslaget
               </div>
             )}
 
@@ -178,10 +199,8 @@ export default function App() {
                 key={i}
                 style={{
                   ...styles.msg,
-                  alignSelf:
-                    m.role === "user" ? "flex-end" : "flex-start",
-                  background:
-                    m.role === "user" ? "#2563eb" : "#f3f4f6",
+                  alignSelf: m.role === "user" ? "flex-end" : "flex-start",
+                  background: m.role === "user" ? "#2563eb" : "#f3f4f6",
                   color: m.role === "user" ? "white" : "#111827",
                 }}
               >
@@ -198,7 +217,7 @@ export default function App() {
             <input
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
-              placeholder="Spør om borettslaget..."
+              placeholder="Spør borettslaget..."
               style={styles.chatInput}
             />
             <button onClick={() => askQuestion()} style={styles.send}>
@@ -230,11 +249,25 @@ const styles = {
     background: "white",
   },
   sidebar: {
-    width: 300,
+    width: 320,
     padding: 16,
     borderRight: "1px solid #eee",
   },
-  logo: { fontSize: 18, fontWeight: 700, marginBottom: 10 },
+  logo: {
+    fontSize: 18,
+    fontWeight: 700,
+    marginBottom: 12,
+  },
+  roleSwitch: {
+    width: "100%",
+    padding: 8,
+    marginBottom: 10,
+    borderRadius: 8,
+    border: "1px solid #ddd",
+    background: "#fff",
+    cursor: "pointer",
+    fontSize: 12,
+  },
   role: {
     fontSize: 12,
     marginBottom: 12,
@@ -246,7 +279,15 @@ const styles = {
     borderRadius: 10,
     marginBottom: 12,
   },
-  label: { fontSize: 11, color: "#666", marginBottom: 6 },
+  label: {
+    fontSize: 11,
+    color: "#666",
+    marginBottom: 6,
+  },
+  smallText: {
+    fontSize: 11,
+    wordBreak: "break-all",
+  },
   button: {
     marginTop: 10,
     width: "100%",
