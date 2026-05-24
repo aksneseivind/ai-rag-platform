@@ -61,7 +61,7 @@ def get_embedding(text: str):
 
 def normalize(v):
     v = np.array(v, dtype="float32")
-    return v / (np.linalg.norm(v) + 1e-10)
+    return (v / (np.linalg.norm(v) + 1e-10)).tolist()
 
 # =========================================================
 # TEXT PROCESSING
@@ -80,8 +80,10 @@ def chunk_text(text, size=1000, overlap=150):
 
     while i < len(text):
         c = text[i:i + size]
+
         if len(c) > 80:
             chunks.append(c)
+
         i += size - overlap
 
     return chunks
@@ -93,8 +95,10 @@ def deduplicate(chunks):
 
     for c in chunks:
         key = c[:120]
+
         if key in seen:
             continue
+
         seen.add(key)
         out.append(c)
 
@@ -120,24 +124,34 @@ def detect_intent(q: str):
 # =========================================================
 
 def rewrite_query(q: str):
+
     try:
         res = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Rewrite query for semantic retrieval."},
+                {
+                    "role": "system",
+                    "content": (
+                        "Rewrite the user query for semantic retrieval. "
+                        "Keep original meaning."
+                    )
+                },
                 {"role": "user", "content": q}
             ],
             temperature=0
         )
+
         return res.choices[0].message.content
-    except:
+
+    except Exception:
         return q
 
 # =========================================================
-# RETRIEVAL (SAFER + TENANT-AWARE STRATEGY)
+# RETRIEVAL
 # =========================================================
 
 def retrieve(query_embedding, user_id, k=8):
+
     try:
         res = supabase.rpc(
             "match_chunks",
@@ -176,10 +190,16 @@ async def upload_pdf(
         raise HTTPException(401, "Missing user_id")
 
     try:
+
         pdf_bytes = await file.read()
+
         reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
 
-        text = " ".join([(p.extract_text() or "") for p in reader.pages])
+        text = " ".join(
+            [(p.extract_text() or "") for p in reader.pages]
+        )
+
+        text = clean_text(text)
 
         chunks = deduplicate(chunk_text(text))
 
@@ -191,18 +211,25 @@ async def upload_pdf(
             input=chunks
         )
 
-        rows = [
-            {
+        rows = []
+
+        for i, chunk in enumerate(chunks):
+
+            rows.append({
                 "content": chunk,
-                "embedding": normalize(embeddings.data[i].embedding).tolist(),
+                "embedding": normalize(
+                    embeddings.data[i].embedding
+                ),
+
+                # IMPORTANT:
+                # tenant isolation column
+                "user_id": user_id,
+
                 "metadata": {
                     "chunk_index": i,
-                    "filename": file.filename,
-                    "user_id": user_id
+                    "filename": file.filename
                 }
-            }
-            for i, chunk in enumerate(chunks)
-        ]
+            })
 
         supabase.table("chunks").insert(rows).execute()
 
@@ -237,11 +264,14 @@ async def chat(req: ChatRequest):
         raise HTTPException(401, "Missing user_id")
 
     try:
+
         intent = detect_intent(req.question)
 
+        rewritten_query = rewrite_query(req.question)
+
         query_embedding = normalize(
-            get_embedding(req.question)
-        ).tolist()
+            get_embedding(rewritten_query)
+        )
 
         results = retrieve(
             query_embedding=query_embedding,
@@ -259,10 +289,21 @@ async def chat(req: ChatRequest):
         context_chunks = []
         sources = []
 
+        seen = set()
+
         for r in results[:5]:
+
             content = r.get("content")
+
             if not content:
                 continue
+
+            key = content[:120]
+
+            if key in seen:
+                continue
+
+            seen.add(key)
 
             context_chunks.append(content)
 
@@ -287,7 +328,10 @@ async def chat(req: ChatRequest):
                         f"CONTEXT:\n{context}"
                     )
                 },
-                {"role": "user", "content": req.question}
+                {
+                    "role": "user",
+                    "content": req.question
+                }
             ],
             temperature=0.2
         )
@@ -300,7 +344,11 @@ async def chat(req: ChatRequest):
 
     except Exception:
         print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail="Internal error")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Internal error"
+        )
 
 # =========================================================
 # HEALTH
