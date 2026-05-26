@@ -18,24 +18,23 @@ export default function App() {
     useState("");
 
   useEffect(() => {
-    supabase.auth
-      .getSession()
-      .then(({ data }) => {
-        setSession(data.session);
-      });
+  const init = async () => {
+    const { data } = await supabase.auth.getSession();
+    setSession(data.session);
 
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        setSession(session);
-      }
-    );
+    const { data: userData } = await supabase.auth.getUser();
+    console.log("USER:", userData?.user?.id);
+  };
 
-    return () => {
-      subscription.unsubscribe();
-    };
-  }, []);
+  init();
+
+  const { data: { subscription } } =
+    supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+  return () => subscription.unsubscribe();
+}, []);
 
   // =========================
   // APP STATE
@@ -67,38 +66,54 @@ const [profile, setProfile] = useState(null);
 const [profileLoading, setProfileLoading] = useState(true);
 
 useEffect(() => {
-  const loadProfile = async () => {
-    if (!session?.user?.id) {
-      setProfile(null);
-      setProfileLoading(false);
-      return;
-    }
 
-    setProfileLoading(true);
+if (!session?.user?.id) {
+setProfile(null);
+setProfileLoading(false);
+return;
+}
 
-    try {
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("*")
-        .eq("id", session.user.id)
-        .single();
+let ignore = false;
 
-      if (error) {
-        console.error("Profile error:", error);
-        setProfile(null);
-      } else {
-        setProfile(data);
-      }
-    } catch (err) {
-      console.error("Profile fetch failed:", err);
-      setProfile(null);
-    } finally {
-      setProfileLoading(false);
-    }
-  };
+const loadProfile = async () => {
 
-  loadProfile();
-}, [session]);
+```
+setProfileLoading(true);
+
+const { data, error } = await supabase
+  .from("profiles")
+  .select("*")
+  .eq("id", session.user.id)
+  .maybeSingle();
+
+if (ignore) return;
+
+if (error) {
+
+  console.error("Profile error:", error);
+
+  setProfile(null);
+
+} else {
+
+  console.log("PROFILE:", data);
+
+  setProfile(data);
+}
+
+setProfileLoading(false);
+```
+
+};
+
+loadProfile();
+
+return () => {
+ignore = true;
+};
+
+}, [session?.user?.id]);
+
 
   // =========================
   // ROLE SWITCH
