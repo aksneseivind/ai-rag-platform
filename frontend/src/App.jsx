@@ -1,43 +1,154 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { supabase } from "./lib/supabase";
 
 const API =
   import.meta.env.VITE_API_URL ||
   "https://ai-rag-platform.onrender.com";
 
 export default function App() {
+
+  // =========================
+  // AUTH
+  // =========================
+
+  const [session, setSession] = useState(null);
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] =
+    useState("");
+
+  useEffect(() => {
+    supabase.auth
+      .getSession()
+      .then(({ data }) => {
+        setSession(data.session);
+      });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        setSession(session);
+      }
+    );
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  // =========================
+  // APP STATE
+  // =========================
+
   const [file, setFile] = useState(null);
-  const [question, setQuestion] = useState("");
-  const [messages, setMessages] = useState([]);
-  const [loading, setLoading] = useState(false);
+
+  const [question, setQuestion] =
+    useState("");
+
+  const [messages, setMessages] =
+    useState([]);
+
+  const [loading, setLoading] =
+    useState(false);
 
   // =========================
-  // TEMP USER
+  // USER
   // =========================
 
-  const [userId] = useState(() => {
-    let id = localStorage.getItem("user_id");
+  const userId =
+    session?.user?.id || null;
 
-    if (!id) {
-      id = crypto.randomUUID();
-      localStorage.setItem("user_id", id);
+   // =========================
+// DEL 10 — PROFILE
+// =========================
+
+const [profile, setProfile] = useState(null);
+const [profileLoading, setProfileLoading] = useState(true);
+
+useEffect(() => {
+  const loadProfile = async () => {
+    if (!session?.user?.id) {
+      setProfile(null);
+      setProfileLoading(false);
+      return;
     }
 
-    return id;
-  });
+    setProfileLoading(true);
+
+    try {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("*")
+        .eq("id", session.user.id)
+        .single();
+
+      if (error) {
+        console.error("Profile error:", error);
+        setProfile(null);
+      } else {
+        setProfile(data);
+      }
+    } catch (err) {
+      console.error("Profile fetch failed:", err);
+      setProfile(null);
+    } finally {
+      setProfileLoading(false);
+    }
+  };
+
+  loadProfile();
+}, [session]);
 
   // =========================
-  // DEV ROLE SWITCH
+  // ROLE SWITCH
   // =========================
 
   const [role, setRole] = useState(() => {
-    return localStorage.getItem("role") || "resident";
+    return (
+      localStorage.getItem("role") ||
+      "resident"
+    );
   });
 
   const toggleRole = () => {
-    const newRole = role === "admin" ? "resident" : "admin";
+    const newRole =
+      role === "admin"
+        ? "resident"
+        : "admin";
 
     setRole(newRole);
-    localStorage.setItem("role", newRole);
+
+    localStorage.setItem(
+      "role",
+      newRole
+    );
+  };
+
+  // =========================
+  // LOGIN
+  // =========================
+
+  const signIn = async () => {
+
+    const { error } =
+      await supabase.auth
+        .signInWithPassword({
+          email,
+          password,
+        });
+
+    if (error) {
+      alert(error.message);
+    }
+  };
+
+  // =========================
+  // LOGOUT
+  // =========================
+
+  const signOut = async () => {
+    await supabase.auth.signOut();
   };
 
   // =========================
@@ -53,113 +164,198 @@ export default function App() {
   ];
 
   // =========================
-  // UPLOAD
-  // =========================
+// UPLOAD
+// =========================
 
-  const uploadPDF = async () => {
-    if (!file) return;
+const uploadPDF = async () => {
 
-    try {
-      const formData = new FormData();
+  if (!file) return;
 
-      formData.append("file", file);
+  if (!profile?.borettslag_id) {
+    alert("Brukerdata ikke lastet enda – prøv igjen om et øyeblikk");
+    return;
+  }
 
-      // IMPORTANT:
-      // backend expects user_id in form-data
-      formData.append("user_id", userId);
+  if (!userId) {
+  alert("Bruker ikke klar enda – prøv igjen");
+  return;
+}
 
-      const res = await fetch(`${API}/upload`, {
-        method: "POST",
-        body: formData,
-      });
+  try {
 
-      if (!res.ok) {
-        throw new Error(`Upload failed (${res.status})`);
-      }
+    const borettslagId = profile.borettslag_id;
 
-      const data = await res.json();
+    const formData = new FormData();
 
-      console.log(data);
+    formData.append("file", file);
 
-      alert(`Dokument lastet opp ✔ (${data.chunks} chunks)`);
+    formData.append("user_id", userId);
 
-      setFile(null);
-    } catch (err) {
-      console.error(err);
-      alert("Upload failed");
+    formData.append("borettslag_id", borettslagId);
+
+    const res = await fetch(`${API}/upload`, {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!res.ok) {
+      throw new Error(`Upload failed (${res.status})`);
     }
-  };
 
-  // =========================
-  // CHAT
-  // =========================
+    const data = await res.json();
 
-  const askQuestion = async (overrideQuestion = null) => {
-    const q = overrideQuestion || question;
+    alert(`Dokument lastet opp ✔ (${data.chunks} chunks)`);
 
-    if (!q.trim()) return;
+    setFile(null);
+
+  } catch (err) {
+
+    console.error(err);
+
+    alert("Upload failed");
+  }
+};
+
+ // =========================
+// CHAT
+// =========================
+
+const askQuestion = async (overrideQuestion = null) => {
+
+  const q = overrideQuestion || question;
+
+  if (!q.trim()) return;
+
+  if (!profile?.borettslag_id) {
+    alert("Brukerdata ikke lastet enda – prøv igjen om et øyeblikk");
+    return;
+  }
+
+  if (!userId) {
+    alert("Bruker ikke klar enda – prøv igjen");
+    return;
+  }
+
+  setMessages((prev) => [
+    ...prev,
+    {
+      role: "user",
+      text: q,
+    },
+  ]);
+
+  setLoading(true);
+
+  try {
+
+    const res = await fetch(`${API}/chat`, {
+      method: "POST",
+
+      headers: {
+        "Content-Type": "application/json",
+      },
+
+      body: JSON.stringify({
+        question: q,
+        user_id: userId,
+        borettslag_id: profile.borettslag_id,
+      }),
+    });
+
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+
+    const data = await res.json();
 
     setMessages((prev) => [
       ...prev,
       {
-        role: "user",
-        text: q,
+        role: "bot",
+        text: data.answer || "Ingen respons",
       },
     ]);
 
-    setLoading(true);
+  } catch (err) {
 
-    try {
-      const res = await fetch(`${API}/chat`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          question: q,
-          user_id: userId,
-        }),
-      });
+    console.error(err);
 
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "bot",
+        text: "Kunne ikke kontakte server",
+      },
+    ]);
 
-      const data = await res.json();
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "bot",
-          text: data.answer || "Ingen respons",
-        },
-      ]);
-    } catch (err) {
-      console.error(err);
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "bot",
-          text: "Kunne ikke kontakte server",
-        },
-      ]);
-    }
-
+  } finally {
     setLoading(false);
     setQuestion("");
-  };
+  }
+};
 
   // =========================
-  // UI
+  // LOGIN SCREEN
+  // =========================
+
+  if (!session) {
+
+    return (
+      <div style={styles.loginPage}>
+
+        <div style={styles.loginCard}>
+
+          <h2>
+            🏢 Borettslagsassistent
+          </h2>
+
+          <input
+            placeholder="E-post"
+            value={email}
+            onChange={(e) =>
+              setEmail(e.target.value)
+            }
+            style={styles.loginInput}
+          />
+
+          <input
+            type="password"
+            placeholder="Passord"
+            value={password}
+            onChange={(e) =>
+              setPassword(
+                e.target.value
+              )
+            }
+            style={styles.loginInput}
+          />
+
+          <button
+            onClick={signIn}
+            style={styles.loginButton}
+          >
+            Logg inn
+          </button>
+
+        </div>
+
+      </div>
+    );
+  }
+
+  // =========================
+  // MAIN UI
   // =========================
 
   return (
     <div style={styles.bg}>
+
       <div style={styles.shell}>
+
         {/* SIDEBAR */}
 
         <div style={styles.sidebar}>
+
           <div style={styles.logo}>
             🏢 Borettslagsassistent
           </div>
@@ -180,10 +376,18 @@ export default function App() {
             </b>
           </div>
 
+          <button
+            onClick={signOut}
+            style={styles.logoutBtn}
+          >
+            Logg ut
+          </button>
+
           {/* ADMIN */}
 
           {role === "admin" && (
             <div style={styles.card}>
+
               <div style={styles.label}>
                 Styret – dokumenthåndtering
               </div>
@@ -192,7 +396,9 @@ export default function App() {
                 type="file"
                 accept=".pdf"
                 onChange={(e) =>
-                  setFile(e.target.files?.[0])
+                  setFile(
+                    e.target.files?.[0]
+                  )
                 }
               />
 
@@ -201,54 +407,68 @@ export default function App() {
                 disabled={!file}
                 style={{
                   ...styles.button,
-                  opacity: !file ? 0.5 : 1,
-                  cursor: !file
-                    ? "not-allowed"
-                    : "pointer",
+                  opacity:
+                    !file ? 0.5 : 1,
                 }}
               >
                 Last opp PDF
               </button>
+
             </div>
           )}
 
-          {/* QUICK QUESTIONS */}
+          {/* QUESTIONS */}
 
           <div style={styles.card}>
+
             <div style={styles.label}>
               Vanlige spørsmål
             </div>
 
-            {quickQuestions.map((q, i) => (
-              <button
-                key={i}
-                onClick={() => askQuestion(q)}
-                style={styles.exampleBtn}
-              >
-                {q}
-              </button>
-            ))}
+            {quickQuestions.map(
+              (q, i) => (
+                <button
+                  key={i}
+                  onClick={() =>
+                    askQuestion(q)
+                  }
+                  style={
+                    styles.exampleBtn
+                  }
+                >
+                  {q}
+                </button>
+              )
+            )}
+
           </div>
 
+          {/* USER */}
+
           <div style={styles.card}>
+
             <div style={styles.label}>
-              Bruker-ID
+              Innlogget bruker
             </div>
 
             <div style={styles.smallText}>
-              {userId}
+              {session.user.email}
             </div>
+
           </div>
+
         </div>
 
         {/* MAIN */}
 
         <div style={styles.main}>
+
           <div style={styles.topbar}>
             Søk i borettslagets dokumenter
           </div>
 
           <div style={styles.chat}>
+
             {messages.length === 0 && (
               <div style={styles.empty}>
                 Still spørsmål om regler,
@@ -262,6 +482,7 @@ export default function App() {
                 key={i}
                 style={{
                   ...styles.msg,
+
                   alignSelf:
                     m.role === "user"
                       ? "flex-end"
@@ -287,32 +508,53 @@ export default function App() {
                 Søker i dokumentene…
               </div>
             )}
+
           </div>
 
           <div style={styles.inputBar}>
-            <input
-              value={question}
-              onChange={(e) =>
-                setQuestion(e.target.value)
-              }
-              placeholder="Spør borettslaget..."
-              style={styles.chatInput}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  askQuestion();
-                }
-              }}
-            />
 
-            <button
-              onClick={() => askQuestion()}
-              style={styles.send}
-            >
-              Send
-            </button>
+           <input
+  value={question}
+  onChange={(e) =>
+    setQuestion(e.target.value)
+  }
+  disabled={!profile?.borettslag_id || profileLoading}
+  placeholder={
+    profileLoading
+      ? "Laster brukerdata..."
+      : "Spør borettslaget..."
+  }
+  style={styles.chatInput}
+  onKeyDown={(e) => {
+    if (e.key === "Enter" && profile?.borettslag_id && !profileLoading) {
+      askQuestion();
+    }
+  }}
+/>
+           <button
+  onClick={() => askQuestion()}
+  disabled={!profile?.borettslag_id || profileLoading}
+  style={{
+    ...styles.send,
+    opacity:
+      !profile?.borettslag_id || profileLoading
+        ? 0.5
+        : 1,
+    cursor:
+      !profile?.borettslag_id || profileLoading
+        ? "not-allowed"
+        : "pointer",
+  }}
+>
+  Send
+</button>
+
           </div>
+
         </div>
+
       </div>
+
     </div>
   );
 }
@@ -322,6 +564,40 @@ export default function App() {
 // =========================
 
 const styles = {
+
+  loginPage: {
+    height: "100vh",
+    display: "flex",
+    justifyContent: "center",
+    alignItems: "center",
+    background: "#f5f7fb",
+  },
+
+  loginCard: {
+    width: 320,
+    background: "white",
+    padding: 24,
+    borderRadius: 16,
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
+  },
+
+  loginInput: {
+    padding: 10,
+    borderRadius: 8,
+    border: "1px solid #ddd",
+  },
+
+  loginButton: {
+    padding: 10,
+    borderRadius: 8,
+    border: "none",
+    background: "#2563eb",
+    color: "white",
+    cursor: "pointer",
+  },
+
   bg: {
     height: "100vh",
     background: "#f5f7fb",
@@ -361,6 +637,17 @@ const styles = {
     background: "#fff",
     cursor: "pointer",
     fontSize: 12,
+  },
+
+  logoutBtn: {
+    width: "100%",
+    padding: 8,
+    marginBottom: 12,
+    borderRadius: 8,
+    border: "none",
+    background: "#ef4444",
+    color: "white",
+    cursor: "pointer",
   },
 
   role: {

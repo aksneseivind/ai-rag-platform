@@ -130,6 +130,7 @@ def deduplicate(chunks):
 class ChatRequest(BaseModel):
     question: str
     user_id: str
+    borettslag_id: str | None = None   # ✅ FIX ADDED (safe optional)
 
 # ======================================================
 # HEALTH
@@ -149,15 +150,12 @@ def health():
 @app.post("/upload")
 async def upload_pdf(
     file: UploadFile = File(...),
-    user_id: str = Form(...)
+    user_id: str = Form(...),
+    borettslag_id: str = Form(...)   # ✅ FIX ADDED (matches frontend)
 ):
     try:
 
         print("🔥 UPLOAD STARTED")
-
-        # ======================================================
-        # VALIDATE FILE
-        # ======================================================
 
         if not file.filename.lower().endswith(".pdf"):
             raise HTTPException(
@@ -174,10 +172,6 @@ async def upload_pdf(
             )
 
         print(f"📄 FILE: {file.filename}")
-
-        # ======================================================
-        # READ PDF
-        # ======================================================
 
         reader = PyPDF2.PdfReader(
             io.BytesIO(pdf_bytes)
@@ -200,10 +194,6 @@ async def upload_pdf(
                 detail="Could not extract text from PDF"
             )
 
-        # ======================================================
-        # CHUNKING
-        # ======================================================
-
         chunks = chunk_text(full_text)
         chunks = deduplicate(chunks)
 
@@ -215,10 +205,6 @@ async def upload_pdf(
                 detail="No valid chunks created"
             )
 
-        # ======================================================
-        # EMBEDDINGS
-        # ======================================================
-
         print("⚡ CREATING EMBEDDINGS")
 
         embeddings = client.embeddings.create(
@@ -227,10 +213,6 @@ async def upload_pdf(
         )
 
         print("✅ EMBEDDINGS COMPLETE")
-
-        # ======================================================
-        # BUILD ROWS
-        # ======================================================
 
         rows = []
 
@@ -243,13 +225,10 @@ async def upload_pdf(
                 "metadata": {
                     "filename": file.filename,
                     "chunk_index": i,
-                    "type": "board_document"
+                    "type": "board_document",
+                    "borettslag_id": borettslag_id   # ✅ FIX ADDED
                 }
             })
-
-        # ======================================================
-        # SAVE TO SUPABASE
-        # ======================================================
 
         print("💾 INSERTING INTO SUPABASE")
 
@@ -288,25 +267,24 @@ async def chat(req: ChatRequest):
         print(f"QUESTION: {req.question}")
 
         # ======================================================
-        # CREATE QUESTION EMBEDDING
+        # CREATE EMBEDDING
         # ======================================================
 
-        embedding = get_embedding(
-            req.question
-        )
+        embedding = get_embedding(req.question)
 
         # ======================================================
-        # VECTOR SEARCH
+        # VECTOR SEARCH (FIXED)
         # ======================================================
 
         result = supabase.rpc(
-            "match_chunks",
-            {
-                "query_embedding": embedding,
-                "user_id": req.user_id,
-                "match_count": 8
-            }
-        ).execute()
+    "match_chunks",
+    {
+        "query_embedding": embedding,
+        "match_count": 8,
+        "p_user_id": req.user_id,
+        "p_borettslag_id": req.borettslag_id
+    }
+).execute()
 
         matches = result.data or []
 
@@ -314,10 +292,7 @@ async def chat(req: ChatRequest):
 
         if not matches:
             return {
-                "answer": (
-                    "Fant ingen relevant informasjon "
-                    "i dokumentene."
-                ),
+                "answer": "Fant ingen relevant informasjon i dokumentene.",
                 "sources": []
             }
 
@@ -335,17 +310,13 @@ async def chat(req: ChatRequest):
         # ======================================================
 
         sources = []
-
         seen_files = set()
 
         for match in matches:
 
             metadata = match.get("metadata", {})
 
-            filename = metadata.get(
-                "filename",
-                "ukjent"
-            )
+            filename = metadata.get("filename", "ukjent")
 
             if filename not in seen_files:
                 seen_files.add(filename)
@@ -375,7 +346,7 @@ KONTEKST:
 """
 
         # ======================================================
-        # GPT
+        # GPT CALL
         # ======================================================
 
         response = client.chat.completions.create(
@@ -393,12 +364,7 @@ KONTEKST:
             ]
         )
 
-        answer = (
-            response
-            .choices[0]
-            .message
-            .content
-        )
+        answer = response.choices[0].message.content
 
         return {
             "answer": answer,
