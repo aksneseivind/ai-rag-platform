@@ -151,10 +151,9 @@ def health():
 async def upload_pdf(
     file: UploadFile = File(...),
     user_id: str = Form(...),
-    borettslag_id: str = Form(...)   # ✅ FIX ADDED (matches frontend)
+    borettslag_id: str = Form(...)
 ):
     try:
-
         print("🔥 UPLOAD STARTED")
 
         if not file.filename.lower().endswith(".pdf"):
@@ -173,18 +172,14 @@ async def upload_pdf(
 
         print(f"📄 FILE: {file.filename}")
 
-        reader = PyPDF2.PdfReader(
-            io.BytesIO(pdf_bytes)
-        )
-
+        reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
         pages = []
 
         for page in reader.pages:
             text = page.extract_text() or ""
             pages.append(text)
 
-        full_text = " ".join(pages)
-        full_text = clean_text(full_text)
+        full_text = clean_text(" ".join(pages))
 
         print(f"📊 TEXT LENGTH: {len(full_text)}")
 
@@ -194,8 +189,7 @@ async def upload_pdf(
                 detail="Could not extract text from PDF"
             )
 
-        chunks = chunk_text(full_text)
-        chunks = deduplicate(chunks)
+        chunks = deduplicate(chunk_text(full_text))
 
         print(f"🧩 CHUNKS: {len(chunks)}")
 
@@ -215,9 +209,7 @@ async def upload_pdf(
         print("✅ EMBEDDINGS COMPLETE")
 
         rows = []
-
         for i, chunk in enumerate(chunks):
-
             rows.append({
                 "content": chunk,
                 "embedding": embeddings.data[i].embedding,
@@ -226,11 +218,13 @@ async def upload_pdf(
                     "filename": file.filename,
                     "chunk_index": i,
                     "type": "board_document",
-                    "borettslag_id": borettslag_id   # ✅ FIX ADDED
+                    "borettslag_id": borettslag_id
                 }
             })
 
-        print("💾 INSERTING INTO SUPABASE")
+        # 👇 fortsetter under try-blokken
+
+            print("💾 INSERTING INTO SUPABASE")
 
         supabase.table("chunks").insert(rows).execute()
 
@@ -253,7 +247,7 @@ async def upload_pdf(
             status_code=500,
             detail="Upload failed"
         )
-
+    
 # ======================================================
 # CHAT
 # ======================================================
@@ -266,27 +260,22 @@ async def chat(req: ChatRequest):
         print("💬 CHAT REQUEST")
         print(f"QUESTION: {req.question}")
 
-        # ======================================================
-        # CREATE EMBEDDING
-        # ======================================================
-
         embedding = get_embedding(req.question)
 
-        # ======================================================
-        # VECTOR SEARCH (FIXED)
-        # ======================================================
-
         result = supabase.rpc(
-    "match_chunks",
-    {
-        "query_embedding": embedding,
-        "match_count": 8,
-        "p_user_id": req.user_id,
-        "p_borettslag_id": req.borettslag_id
-    }
-).execute()
+            "match_chunks",
+            {
+                "query_embedding": embedding,
+                "match_count": 8,
+                "p_user_id": req.user_id,
+                "p_borettslag_id": req.borettslag_id
+            }
+        ).execute()
 
         matches = result.data or []
+
+        if not isinstance(matches, list):
+            matches = []
 
         print(f"🔎 MATCHES FOUND: {len(matches)}")
 
@@ -296,38 +285,21 @@ async def chat(req: ChatRequest):
                 "sources": []
             }
 
-        # ======================================================
-        # CONTEXT
-        # ======================================================
-
         context = "\n\n".join([
-            match["content"]
+            match.get("content", "")
             for match in matches[:5]
         ])
-
-        # ======================================================
-        # SOURCES
-        # ======================================================
 
         sources = []
         seen_files = set()
 
         for match in matches:
-
             metadata = match.get("metadata", {})
-
             filename = metadata.get("filename", "ukjent")
 
             if filename not in seen_files:
                 seen_files.add(filename)
-
-                sources.append({
-                    "filename": filename
-                })
-
-        # ======================================================
-        # SYSTEM PROMPT
-        # ======================================================
+                sources.append({"filename": filename})
 
         system_prompt = f"""
 Du er en AI-assistent for et borettslag.
@@ -339,28 +311,17 @@ REGLER:
 - Hvis informasjonen mangler:
   si tydelig at det ikke finnes i dokumentene
 - Svar kort, konkret og profesjonelt
-- Ikke si "basert på konteksten"
 
 KONTEKST:
 {context}
 """
 
-        # ======================================================
-        # GPT CALL
-        # ======================================================
-
         response = client.chat.completions.create(
             model=CHAT_MODEL,
             temperature=0.2,
             messages=[
-                {
-                    "role": "system",
-                    "content": system_prompt
-                },
-                {
-                    "role": "user",
-                    "content": req.question
-                }
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": req.question}
             ]
         )
 
