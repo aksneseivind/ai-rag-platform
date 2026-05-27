@@ -77,7 +77,6 @@ let ignore = false;
 
 const loadProfile = async () => {
 
-```
 setProfileLoading(true);
 
 const { data, error } = await supabase
@@ -102,7 +101,6 @@ if (error) {
 }
 
 setProfileLoading(false);
-```
 
 };
 
