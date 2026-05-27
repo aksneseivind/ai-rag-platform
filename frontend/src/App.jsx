@@ -114,32 +114,29 @@ ignore = true;
 
 }, [session?.user?.id]);
 
+// =========================
+// ROLE SWITCH
+// =========================
 
+const [role, setRole] = useState(
+localStorage.getItem("role") || "resident"
+);
 
-  // =========================
-  // ROLE SWITCH
-  // =========================
+const toggleRole = () => {
 
-  const [role, setRole] = useState(() => {
-    return (
-      localStorage.getItem("role") ||
-      "resident"
-    );
-  });
+const newRole =
+role === "admin"
+? "resident"
+: "admin";
 
-  const toggleRole = () => {
-    const newRole =
-      role === "admin"
-        ? "resident"
-        : "admin";
+setRole(newRole);
 
-    setRole(newRole);
+localStorage.setItem(
+"role",
+newRole
+);
+};
 
-    localStorage.setItem(
-      "role",
-      newRole
-    );
-  };
 
   // =========================
   // LOGIN
